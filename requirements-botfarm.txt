@@ -1,0 +1,5 @@
+numpy
+pandas
+ccxt
+anthropic
+pytest
