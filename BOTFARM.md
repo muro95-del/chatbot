@@ -31,6 +31,14 @@ Stand ansehen:
 python -m botfarm status
 ```
 
+Dashboard im Browser (Vermögen, Tresor, alle Bots, Ereignisse; lädt jede Minute neu):
+
+```bash
+streamlit run dashboard.py
+```
+
+Läuft noch keine Farm, zeigt das Dashboard eine Demo-Simulation mit Zufallskursen.
+
 Not-Aus (alle Positionen verkaufen, nichts mehr handeln):
 
 ```bash
