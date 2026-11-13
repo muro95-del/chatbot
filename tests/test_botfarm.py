@@ -311,9 +311,12 @@ class FakeExchange:
                 "fee": {"cost": cost * 0.001, "currency": "USDT"}}
 
 
-def farm_holding(units, halted=""):
-    bots = [types.SimpleNamespace(account=types.SimpleNamespace(units=u)) for u in units]
+def farm_holding(units, halted="", symbol="BTC/USDT"):
+    bots = [types.SimpleNamespace(account=types.SimpleNamespace(units=u), genome={"symbol": symbol}) for u in units]
     return types.SimpleNamespace(alive=bots, halted=halted, last_ts="2024-01-01")
+
+
+P = {"BTC/USDT": 100.0}
 
 
 def test_live_executor_follows_net_position_within_budget(tmp_path):
@@ -323,24 +326,49 @@ def test_live_executor_follows_net_position_within_budget(tmp_path):
     live = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "live.json"), real_orders=True)
     live.check_balance()
 
-    order = live.sync(farm_holding([0.2, 0.1]), 100.0)  # Bots halten zusammen 0,3 = 30 USDT
-    assert order["side"] == "buy" and live.state["units"] == pytest.approx(0.3)
+    (order,) = live.sync(farm_holding([0.2, 0.1]), P)  # Bots halten zusammen 0,3 = 30 USDT
+    assert order["side"] == "buy" and live.state["units"]["BTC/USDT"] == pytest.approx(0.3)
     assert live.state["cash"] == pytest.approx(50 - 30 - 0.03)
-    assert live.sync(farm_holding([0.2, 0.1]), 100.0) is None  # nichts zu tun: keine zweite Order
+    assert live.sync(farm_holding([0.2, 0.1]), P) == []  # nichts zu tun: keine zweite Order
 
-    live.sync(farm_holding([5.0]), 100.0)  # Buch will 500 USDT, Budget erlaubt nur den Rest
-    assert live.state["cash"] >= 0 and live.state["units"] < 0.5
+    live.sync(farm_holding([5.0]), P)  # Buch will 500 USDT, Budget erlaubt nur den Rest
+    assert live.state["cash"] >= 0 and live.state["units"]["BTC/USDT"] < 0.5
     spent = sum(c for side, c in ex.sent if side == "buy")
     assert spent <= 50.0
 
-    live.sync(farm_holding([0.3], halted="Not-Aus"), 100.0)  # Halt: alles verkaufen
-    assert live.state["units"] == pytest.approx(0.0, abs=1e-6) and ex.sent[-1][0] == "sell"
-    assert live.value(100.0) == pytest.approx(50 - live.state["fees"], abs=1e-3)
+    live.sync(farm_holding([0.3], halted="Not-Aus"), P)  # Halt: alles verkaufen
+    assert live.state["units"]["BTC/USDT"] == pytest.approx(0.0, abs=1e-6) and ex.sent[-1][0] == "sell"
+    assert live.value(P) == pytest.approx(50 - live.state["fees"], abs=1e-3)
 
     resumed = LiveExecutor(ex, "BTC/USDT", 999.0, str(tmp_path / "live.json"), real_orders=True)
     assert resumed.state["budget"] == 50.0 and resumed.state["cash"] == pytest.approx(live.state["cash"])
-    with pytest.raises(SystemExit):
-        LiveExecutor(ex, "ETH/USDT", 50.0, str(tmp_path / "live.json"), real_orders=True)
+
+
+def test_live_executor_handles_several_coins_and_ignores_leverage(tmp_path):
+    from botfarm.live import LiveExecutor
+
+    ex = FakeExchange(price=100.0)
+    live = LiveExecutor(ex, ["BTC/USDT", "ETH/USDT"], 100.0, str(tmp_path / "live.json"), real_orders=True)
+    prices = {"BTC/USDT": 100.0, "ETH/USDT": 100.0}
+    bots = farm_holding([0.3]).alive + farm_holding([0.4], symbol="ETH/USDT").alive
+    bots += farm_holding([-2.0], symbol="ETH/USDT").alive  # Short: nie als Spot-Order
+    farm = types.SimpleNamespace(alive=bots, halted="", last_ts="t")
+    orders = live.sync(farm, prices)
+    assert {o["symbol"]: o["side"] for o in orders} == {"BTC/USDT": "buy", "ETH/USDT": "buy"}
+    assert live.state["units"] == pytest.approx({"BTC/USDT": 0.3, "ETH/USDT": 0.4})
+
+    farm.alive = farm_holding([0.9]).alive  # ETH raus, BTC aufstocken: erst verkaufen, dann kaufen
+    orders = live.sync(farm, prices)
+    assert [o["side"] for o in orders] == ["sell", "buy"]
+    assert live.state["units"]["ETH/USDT"] == pytest.approx(0, abs=1e-6) and live.state["cash"] >= 0
+
+    with pytest.raises(SystemExit):  # ein noch gehaltener Coin darf nicht aus der Liste fallen
+        LiveExecutor(ex, ["ETH/USDT"], 100.0, str(tmp_path / "live.json"), real_orders=True)
+
+    old = {"symbol": "BTC/USDT", "budget": 50, "cash": 20, "units": 0.3, "fees": 0, "orders": []}
+    json.dump(old, open(tmp_path / "old.json", "w"))
+    migrated = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "old.json"), real_orders=True)
+    assert migrated.state["units"] == {"BTC/USDT": 0.3}  # Stand der Ein-Coin-Version wird uebernommen
 
 
 def test_live_executor_dry_run_and_safety_checks(tmp_path, monkeypatch):
@@ -348,9 +376,9 @@ def test_live_executor_dry_run_and_safety_checks(tmp_path, monkeypatch):
 
     ex = FakeExchange(price=100.0, free=20.0)
     dry = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "dry.json"), real_orders=False)
-    order = dry.sync(farm_holding([0.2]), 100.0)
+    (order,) = dry.sync(farm_holding([0.2]), P)
     assert order["real"] is False and ex.sent == []  # Probelauf schickt nichts ab
-    assert dry.sync(farm_holding([0.200001]), 100.0) is None  # unter der Mindestgroesse
+    assert dry.sync(farm_holding([0.200001]), P) == []  # unter der Mindestgroesse
 
     real = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "real.json"), real_orders=True)
     with pytest.raises(SystemExit):
@@ -361,8 +389,8 @@ def test_live_executor_dry_run_and_safety_checks(tmp_path, monkeypatch):
     import botfarm.live as live_module
     monkeypatch.setattr(live_module.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError):
-        real.sync(farm_holding([0.2]), 100.0)  # unklare Ausfuehrung: anhalten statt raten
-    assert real.state["units"] == 0.0 and real.state["cash"] == 50.0
+        real.sync(farm_holding([0.2]), P)  # unklare Ausfuehrung: anhalten statt raten
+    assert real.state["units"] == {} and real.state["cash"] == 50.0
 
 
 def test_live_command_runs_and_refuses_to_mix_with_paper(tmp_path, monkeypatch, capsys):
@@ -384,11 +412,11 @@ def test_live_command_runs_and_refuses_to_mix_with_paper(tmp_path, monkeypatch, 
     farm = Farm.load(str(tmp_path / "state.json"))
     booked = sum(b.account.units for b in farm.alive)
     assert booked > 0 and farm.bar_count == 1  # verpasste Kerzen werden nicht nachgespielt
-    assert real["units"] == pytest.approx(booked, rel=0.01)
+    assert real["units"]["BTC/USDT"] == pytest.approx(booked, rel=0.01)
     assert real["cash"] >= 0 and sum(c for s, c in ex.sent if s == "buy") <= 100.0
-    assert real["cash"] + real["units"] * farm.last_price == pytest.approx(farm.total_wealth(), rel=0.01)
+    assert real["cash"] + real["units"]["BTC/USDT"] * farm.last_price == pytest.approx(farm.total_wealth(), rel=0.01)
     cli.main(["status"])
-    assert "Echtes Konto" in capsys.readouterr().out
+    assert "Anteil des Bots" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["paper", "--exchange", "bitget", "--once"])
 
@@ -460,7 +488,7 @@ def test_dry_run_state_is_archived_not_reused_for_real_money(tmp_path, monkeypat
     archived = list(tmp_path.glob("botfarm_state_probelauf_*"))
     assert len(archived) == 1 and (archived[0] / "live.json").exists()
     real = json.load(open(state_dir / "live.json"))
-    assert real["real_orders"] is True and real["cash"] + real["units"] * ex.price == pytest.approx(100, abs=1)
+    assert real["real_orders"] is True and real["cash"] + sum(real["units"].values()) * ex.price == pytest.approx(100, abs=1)
     with pytest.raises(SystemExit, match="ECHTEM"):
         cli.main(base)  # Probelauf darf einen Echtgeld-Stand nicht ueberschreiben
 
@@ -501,7 +529,7 @@ def test_live_loop_follows_price_in_real_time(tmp_path, monkeypatch):
     clock = {"t": 0.0}
     monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[: visible["n"]].tail(1500).reset_index(drop=True))
-    monkeypatch.setattr(cli.data, "last_price", lambda *a: next(prices))
+    monkeypatch.setattr(cli.data, "last_prices", lambda *a: {"BTC/USDT": next(prices)})
     monkeypatch.setattr(cli.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
     monkeypatch.setattr(cli.time, "time", lambda: clock["t"])
     monkeypatch.setattr(live_module, "connect", lambda name, uta=False: ex)
@@ -513,7 +541,7 @@ def test_live_loop_follows_price_in_real_time(tmp_path, monkeypatch):
     farm = Farm.load(str(tmp_path / "state.json"))
     real = json.load(open(tmp_path / "live.json"))
     assert farm.halted and not any(b.account.units for b in farm.bots)
-    assert real["units"] == pytest.approx(0, abs=1e-6) and ex.sent[-1][0] == "sell"
+    assert real["units"]["BTC/USDT"] == pytest.approx(0, abs=1e-6) and ex.sent[-1][0] == "sell"
     assert clock["t"] == 20  # reagiert beim zweiten Tick, nicht erst bei der naechsten Kerze
 
 
@@ -531,7 +559,7 @@ def test_live_mode_reads_real_account_balance(tmp_path, monkeypatch, capsys):
 
     cli.main(argv)  # Probelauf reicht: der Kontostand wird nur gelesen
     acct = json.load(open(tmp_path / "live.json"))["account"]
-    assert (acct["quote_free"], acct["quote_total"], acct["base_total"]) == (321.5, 400.0, 0.25)
+    assert (acct["quote_free"], acct["quote_total"], acct["coins"]) == (321.5, 400.0, {"BTC": 0.25})
     assert "Bitget-Konto: 400.00 USDT" in capsys.readouterr().out and ex.sent == []
 
     def broken():
@@ -541,3 +569,108 @@ def test_live_mode_reads_real_account_balance(tmp_path, monkeypatch, capsys):
     cli.main(argv)  # Abruf scheitert: Bot laeuft weiter, alter Stand bleibt
     assert json.load(open(tmp_path / "live.json"))["account"]["quote_total"] == 400.0
     assert "Kontostand nicht abrufbar" in capsys.readouterr().out
+
+
+# ---------------- Hebel, Short, mehrere Coins
+def test_leveraged_and_short_account_math():
+    long3 = Account(cash=100.0)
+    long3.set_target(1, 100.0, 0.0, 0.0, leverage=3, side=1)
+    assert long3.units == pytest.approx(3.0) and long3.margin == 100 and long3.cash == 0
+    assert long3.equity(110.0) == pytest.approx(130.0)  # +10 % Kurs = +30 %
+    assert long3.equity(60.0) == 0.0  # isoliert: nie unter null
+    assert not long3.liquidated(70.0) and long3.liquidated(66.9)
+    out = long3.withdraw(13.0, 110.0, 0.0, 0.0)  # Gewinn entnehmen schliesst einen Teil
+    assert out == pytest.approx(13.0) and long3.equity(110.0) == pytest.approx(117.0)
+    long3.set_target(0, 110.0, 0.0, 0.0)
+    assert long3.cash == pytest.approx(117.0) and long3.units == 0 and long3.margin == 0
+
+    short2 = Account(cash=100.0)
+    short2.set_target(1, 100.0, 0.0, 0.0, leverage=2, side=-1)
+    assert short2.units == pytest.approx(-2.0)
+    assert short2.equity(90.0) == pytest.approx(120.0)  # Kurs faellt: Short gewinnt
+    assert short2.liquidated(150.0) and not short2.liquidated(140.0)
+    short2.funding(100.0, 0.001)
+    assert short2.margin == pytest.approx(99.8)
+
+    fees = Account(cash=100.0)
+    fees.set_target(1, 100.0, 0.001, 0.0, leverage=5, side=1)  # Gebuehr faellt auf die volle Position an
+    assert fees.margin == pytest.approx(99.5) and fees.units == pytest.approx(4.975)
+
+
+def test_short_strategy_mirrors_long_and_backtest_liquidates():
+    up, down = trending(1500, seed=1, drift=0.002), trending(1500, seed=1, drift=-0.002)
+    base = {"family": "ema_cross", "params": {"fast": 5, "slow": 30, "trend": 0}}
+    long_up = backtest(strategies.normalize(base), up, 0.001, 0.0005)
+    short_down = backtest(strategies.normalize({**base, "side": "short"}), down, 0.001, 0.0005)
+    short_up = backtest(strategies.normalize({**base, "side": "short"}), up, 0.001, 0.0005)
+    assert long_up["return"] > 0 and short_down["return"] > 0 and short_down["return"] > short_up["return"]
+
+    lev3 = backtest(strategies.normalize({**base, "leverage": 3}), up, 0.001, 0.0005)
+    assert lev3["max_drawdown"] > long_up["max_drawdown"]  # Hebel vergroessert auch die Einbrueche
+
+    crash = frame(np.concatenate([np.linspace(100, 104, 200), [80.0, 80.0]]))  # Absturz in einer Kerze
+    crash["low"] = crash["close"] * 0.99
+    wiped = backtest(strategies.normalize({**base, "leverage": 10}), crash, 0.0, 0.0)
+    assert wiped["return"] == pytest.approx(-1.0)  # liquidiert: Einsatz weg, Backtest-Filter lehnt ab
+
+
+def test_leveraged_bot_is_liquidated_but_loses_only_its_own_money():
+    cfg = FarmConfig(fee=0, slippage=0, epoch_bars=10**9, kill_drawdown=0.99, global_stop=0.01, max_leverage=5,
+                     milestones=(10.0,), giveback=0.99, funding_per_hour=0.0)
+    farm = Farm(cfg)
+    farm.treasury = 50.0  # die Haelfte bleibt ausserhalb der Position
+    genome = strategies.normalize({**ALWAYS_IN, "symbol": "BTC/USDT", "leverage": 5})
+    farm._add_bot((genome, {"return": 0.0, "max_drawdown": 0.0}), 50.0, parent=None, probation=False)
+    farm._signal = lambda bot, df: np.ones(len(df))
+    run(farm, frame(np.full(30, 100.0)))
+    bot = farm.bots[0]
+    assert bot.account.units == pytest.approx(2.5)
+
+    farm.tick(110.0, "t")
+    assert farm.equity_of(bot) == pytest.approx(75.0)
+    farm.tick(79.0, "t")  # -21 % Kurs bei 5x: Margin aufgebraucht
+    assert bot.status == "dead" and "liquidiert" in bot.death_reason
+    assert farm.total_wealth() == pytest.approx(farm.treasury + farm.vault)
+    assert farm.treasury >= 50.0  # der Rest der Farm ist unberuehrt
+
+
+@pytest.mark.parametrize("seed", [1, 3])
+def test_multi_coin_farm_with_leverage_keeps_the_books_balanced(seed):
+    symbols = ("BTC/USDT", "ETH/USDT", "SOL/USDT")
+    cfg = FarmConfig(seed=seed, symbols=symbols, max_leverage=3, allow_short=True, candidates=12)
+    frames = data.synthetic_frames(symbols, 4000, seed=seed)
+    farm = Farm.start(cfg, frames, 1399)
+    for i in range(1400, 4000):
+        farm.step(frames, i)
+        if i % 500 == 0:
+            farm.tick({s: float(frames[s]["close"].iloc[i]) * 1.001 for s in symbols}, "t")
+    assert sum(farm.profit_of(b) for b in farm.bots) == pytest.approx(farm.total_wealth() - cfg.start_capital)
+    assert farm.vault == pytest.approx(sum(b.secured for b in farm.bots))
+    assert farm.treasury >= 0 and all(b.account.cash >= -1e-9 and b.account.margin >= 0 for b in farm.bots)
+    assert all(1 <= b.leverage <= 3 and b.genome["symbol"] in symbols for b in farm.bots)
+    resumed = Farm.from_dict(json.loads(json.dumps(farm.to_dict())))
+    assert resumed.total_wealth() == pytest.approx(farm.total_wealth()) and resumed.prices == farm.prices
+
+
+def test_state_from_single_coin_version_still_loads():
+    cfg = FarmConfig(fee=0, slippage=0, epoch_bars=10**9)
+    farm = run(one_bot_farm(cfg), frame(np.linspace(100, 120, 40)))
+    old = farm.to_dict()
+    old["last_price"] = old.pop("prices")["BTC/USDT"]
+    for key in ("symbols", "max_leverage", "allow_short", "bar_minutes", "funding_per_hour"):
+        old["config"].pop(key)
+    for bot in old["bots"]:
+        bot["account"] = {"cash": bot["account"]["cash"], "units": bot["account"]["units"]}
+    loaded = Farm.from_dict(old)
+    assert loaded.total_wealth() == pytest.approx(farm.total_wealth())
+    assert loaded.bots[0].account.margin == pytest.approx(loaded.bots[0].account.units * 120.0)
+
+
+def test_cli_simulates_several_coins_and_blocks_leverage_with_real_money(capsys):
+    from botfarm import cli
+
+    cli.main(["simulate", "--bars", "3000", "--symbols", "BTC/USDT,ETH/USDT", "--max-leverage", "3", "--short"])
+    out = capsys.readouterr().out
+    assert "Gesamtvermoegen" in out and "ETH/USDT:" in out
+    with pytest.raises(SystemExit, match="Spielgeld"):
+        cli.main(["live", "--exchange", "bitget", "--max-leverage", "3", "--once"])

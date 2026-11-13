@@ -5,7 +5,11 @@ cd /d "%~dp0.."
 
 rem ============ Einstellungen (hier aendern) ============
 set CAPITAL=50
-set SYMBOL=BTC/USDT
+rem Coins, auf denen der Bot handeln darf (mit Komma getrennt, ohne Leerzeichen)
+set SYMBOLS=BTC/USDT,ETH/USDT,SOL/USDT,XRP/USDT,BNB/USDT,DOGE/USDT
+rem Hebel und Short gelten nur fuer SPIELGELD. Mit echtem Geld handelt der Bot ohne Hebel.
+set MAX_LEVERAGE=3
+set SHORT=--short
 rem Kerzenlaenge: 5m, 15m oder 1h. Kuerzer = mehr Trades, aber auch mehr Gebuehren.
 set TIMEFRAME=15m
 rem =======================================================
@@ -62,7 +66,7 @@ set EXTRA=
 if /i "%1"=="echtgeld" (
   echo.
   echo ================================================================
-  echo   ACHTUNG: ECHTES GELD. Der Bot kauft und verkauft BTC auf Bitget
+  echo   ACHTUNG: ECHTES GELD. Der Bot kauft und verkauft Coins auf Bitget
   echo   mit bis zu %CAPITAL% USDT. Verluste sind moeglich.
   echo ================================================================
   set /p OK=Zum Starten JA eintippen und Enter druecken: 
@@ -76,7 +80,7 @@ echo.
 echo Bot laeuft. Das Dashboard oeffnet sich gleich im Browser.
 echo Dieses Fenster offen lassen. Beenden: Fenster schliessen oder Strg+C.
 echo.
-py -3.14 -m botfarm live --exchange bitget --symbol %SYMBOL% --timeframe %TIMEFRAME% --capital %CAPITAL% --uta --dashboard %EXTRA%
+py -3.14 -m botfarm live --exchange bitget --symbols "%SYMBOLS%" --timeframe %TIMEFRAME% --capital %CAPITAL% --uta --dashboard %EXTRA%
 echo.
 echo Der Bot wurde beendet.
 pause
@@ -89,7 +93,7 @@ echo.
 echo Bot laeuft mit SPIELGELD (%CAPITAL% USDT, erfunden). Das Dashboard oeffnet sich gleich im Browser.
 echo Dieses Fenster offen lassen. Beenden: Fenster schliessen oder Strg+C.
 echo.
-py -3.14 -m botfarm paper --exchange bitget --symbol %SYMBOL% --timeframe %TIMEFRAME% --capital %CAPITAL% --dashboard
+py -3.14 -m botfarm paper --exchange bitget --symbols "%SYMBOLS%" --timeframe %TIMEFRAME% --capital %CAPITAL% --max-leverage %MAX_LEVERAGE% %SHORT% --dashboard
 echo.
 echo Der Bot wurde beendet.
 pause

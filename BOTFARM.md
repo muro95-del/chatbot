@@ -18,7 +18,7 @@ Im Ordner liegen vier Dateien zum Doppelklicken:
 - `Bot stoppen (Not-Aus).bat`: der laufende Bot verkauft alles und hält an.
 
 Beim ersten Start werden die Pakete installiert und die Bitget-API-Daten abgefragt. Sie werden
-im Windows-Benutzerkonto gespeichert, nicht im Ordner. Budget und Handelspaar stehen oben in
+im Windows-Benutzerkonto gespeichert, nicht im Ordner. Budget, Coins und Hebel stehen oben in
 `windows/run.bat`. Das Fenster muss offen bleiben, solange der Bot laufen soll.
 
 ## Starten
@@ -30,13 +30,13 @@ pip install -r requirements-botfarm.txt
 Test auf alten Kursen einer Börse (hier Bitget, Bitcoin gegen USDT):
 
 ```bash
-python -m botfarm simulate --exchange bitget --symbol BTC/USDT --bars 8000 -v
+python -m botfarm simulate --exchange bitget --symbols BTC/USDT,ETH/USDT,SOL/USDT --bars 8000 -v
 ```
 
 Dauerbetrieb mit Spielgeld (Stand liegt in `botfarm_state/`):
 
 ```bash
-python -m botfarm paper --exchange bitget --symbol BTC/USDT --capital 100
+python -m botfarm paper --exchange bitget --symbols BTC/USDT,ETH/USDT,SOL/USDT --capital 100
 ```
 
 Stand ansehen:
@@ -77,7 +77,7 @@ export BOTFARM_API_PASSPHRASE="..."
 3. Probelauf: verbindet sich mit dem Konto, zeigt aber nur an, was er ordern würde.
 
 ```bash
-python -m botfarm live --exchange bitget --symbol BTC/USDT --capital 50 --dashboard
+python -m botfarm live --exchange bitget --symbols BTC/USDT,ETH/USDT,SOL/USDT --capital 50 --dashboard
 ```
 
    Zeigt Bitget beim Erstellen des Schlüssels „Unified trading account“ statt „Spot“, läuft dein
@@ -88,7 +88,7 @@ python -m botfarm live --exchange bitget --symbol BTC/USDT --capital 50 --dashbo
 4. Echte Orders: vorher den Ordner `botfarm_state/` vom Probelauf verschieben oder löschen.
 
 ```bash
-python -m botfarm live --exchange bitget --symbol BTC/USDT --capital 50 --dashboard --real-orders
+python -m botfarm live --exchange bitget --symbols BTC/USDT,ETH/USDT,SOL/USDT --capital 50 --dashboard --real-orders
 ```
 
 So ist das Geld geschützt:
@@ -96,8 +96,8 @@ So ist das Geld geschützt:
 - `--capital` ist das Budget. Der Bot kauft nie für mehr, auch wenn mehr auf dem Konto liegt.
   Gesicherter Gewinn bleibt als USDT auf der Börse liegen und wird nicht mehr gehandelt.
 - Beim ersten Start prüft er, ob das Budget frei auf dem Konto liegt.
-- Alle Bots handeln dasselbe Paar. Auf der Börse gibt es deshalb nur eine gemeinsame Position;
-  wer welchen Anteil hat, steht in der Buchführung der Farm.
+- Mehrere Bots können denselben Coin handeln. Auf der Börse gibt es je Coin nur eine gemeinsame
+  Position; wer welchen Anteil hat, steht in der Buchführung der Farm.
 - Ist nach einer Order unklar, ob sie ausgeführt wurde, sperrt sich der Bot
   (`botfarm_state/BOERSE_PRUEFEN`), statt ein zweites Mal zu kaufen.
 - War der Bot aus, spielt er verpasste Kerzen nicht nach, sondern macht beim aktuellen Kurs
@@ -106,6 +106,30 @@ So ist das Geld geschützt:
 
 Buchführung und echtes Konto weichen leicht voneinander ab, weil echte Orders nie genau zum
 Schlusskurs ausgeführt werden. `status` und das Dashboard zeigen beide Werte.
+
+## Mehrere Coins, Hebel und Short
+
+- `--symbols BTC/USDT,ETH/USDT,SOL/USDT` gibt die Coins vor. Jeder Bot handelt genau einen Coin.
+  Für jeden neuen Bot werden Kandidaten auf allen Coins im Backtest verglichen; der beste gewinnt,
+  egal auf welchem Coin.
+- `--max-leverage 3` erlaubt Hebel bis 3x, `--short` erlaubt Bots, die auf fallende Kurse setzen.
+  Jede Position ist isoliert: Ein Bot kann höchstens sein eigenes Geld verlieren. Fällt die
+  Position unter die Mindest-Sicherheit, wird sie liquidiert und der Bot stirbt. Gebühren fallen
+  auf die volle, gehebelte Position an, dazu laufende Finanzierungskosten.
+- **Hebel und Short gibt es bisher nur mit Spielgeld.** `live` lehnt beides ab und handelt Spot
+  ohne Hebel, auf mehreren Coins. Die Futures-Anbindung für echtes Geld fehlt noch.
+
+Auf Zufallskursen (6 Durchläufe, 3 Coins) war die Farm mit 3x-Hebel und Short in 5 von 6
+Durchläufen schlechter als ohne Hebel, zweimal mit rund −40 %. Ohne Hebel lag sie zwischen
++41 % und +187 %. Zufallskurse sagen nichts über echte Märkte, aber Hebel erhöht das Risiko
+sicher und den Gewinn nicht.
+
+## Strategien und Indikatoren
+
+Sechs Familien: Kreuzung gleitender Durchschnitte (EMA), RSI-Gegenbewegung, Ausbruch aus einer
+Kursspanne (Donchian), Bollinger-Bänder, MACD und Supertrend (ATR-basiert), jeweils mit
+optionalem Trendfilter. Welcher Indikator mit welchen Werten auf welchem Coin läuft, entscheidet
+der Backtest. Es gibt keinen Indikator, der grundsätzlich der beste ist.
 
 ## Echtzeit
 
@@ -150,12 +174,6 @@ Varianten vor (braucht `ANTHROPIC_API_KEY`); sie müssen denselben Test bestehen
 Startgelds, hält die Farm alles an.
 
 Alle Werte stehen in `botfarm/config.py`.
-
-## Strategien
-
-Vier einfache Familien, jeweils nur Kaufen und Halten oder Nicht-Halten (kein Hebel, kein
-Leerverkauf): Kreuzung gleitender Durchschnitte, RSI-Gegenbewegung, Ausbruch aus einer
-Kursspanne (Donchian) und Bollinger-Bänder, jeweils mit optionalem Trendfilter.
 
 ## Grenzen
 

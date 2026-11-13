@@ -15,6 +15,8 @@ PARAM_SPACE: dict[str, dict[str, tuple[float, float, bool]]] = {
     "rsi_reversion": {"period": (5, 30, True), "buy_below": (15, 45, False), "sell_above": (50, 85, False)},
     "donchian": {"entry": (10, 200, True), "exit": (5, 100, True)},
     "bollinger": {"period": (10, 100, True), "width": (1.0, 3.5, False)},
+    "macd": {"fast": (5, 20, True), "slow": (21, 60, True), "smooth": (5, 15, True)},
+    "supertrend": {"period": (7, 30, True), "mult": (1.5, 5.0, False)},
 }
 COMMON: dict[str, tuple[float, float, bool]] = {"trend": (0, 400, True)}  # 0 = kein Trendfilter
 
@@ -38,9 +40,16 @@ def normalize(genome: dict) -> dict:
         params[name] = int(round(value)) if is_int else round(value, 3)
     if family == "ema_cross" and params["fast"] >= params["slow"]:
         params["slow"] = min(300, params["fast"] * 2 + 1)
+    if family == "macd" and params["fast"] >= params["slow"]:
+        params["slow"] = params["fast"] + 10
     if 0 < params["trend"] < 20:
         params["trend"] = 0
-    return {"family": family, "params": params}
+    out = {"family": family, "params": params}
+    if genome.get("symbol"):
+        out["symbol"] = genome["symbol"]
+    out["leverage"] = int(min(max(int(genome.get("leverage", 1) or 1), 1), 20))
+    out["side"] = "short" if genome.get("side") == "short" else "long"
+    return out
 
 
 def random_genome(rng: np.random.Generator) -> dict:
@@ -58,7 +67,7 @@ def mutate(genome: dict, rng: np.random.Generator, strength: float = 0.25) -> di
             params[name] = params[name] + rng.normal(0, strength) * (hi - lo) * 0.5
     if rng.random() < 0.15:
         params["trend"] = 0 if params["trend"] else rng.uniform(50, 400)
-    return normalize({"family": genome["family"], "params": params})
+    return normalize({**genome, "params": params})
 
 
 def _latch(enter: pd.Series, leave: pd.Series) -> pd.Series:
@@ -72,6 +81,10 @@ def _latch(enter: pd.Series, leave: pd.Series) -> pd.Series:
 def signal(genome: dict, df: pd.DataFrame) -> np.ndarray:
     """Zielposition (0 oder 1) am Schluss jeder Kerze."""
     p = genome["params"]
+    if genome.get("side") == "short":
+        # Short = dieselbe Strategie auf dem gespiegelten Kurs: sie "kauft", wenn der Kurs faellt.
+        df = pd.DataFrame({"close": 1 / df["close"].astype(float), "high": 1 / df["low"].astype(float),
+                           "low": 1 / df["high"].astype(float)})
     close = df["close"].astype(float).reset_index(drop=True)
     family = genome["family"]
 
@@ -96,6 +109,12 @@ def signal(genome: dict, df: pd.DataFrame) -> np.ndarray:
         mid = close.rolling(p["period"]).mean()
         std = close.rolling(p["period"]).std(ddof=0)
         pos = _latch(close < mid - p["width"] * std, close > mid)
+    elif family == "macd":
+        line = close.ewm(span=p["fast"], adjust=False).mean() - close.ewm(span=p["slow"], adjust=False).mean()
+        pos = (line > line.ewm(span=p["smooth"], adjust=False).mean()).astype(float)
+        pos[: p["slow"] + p["smooth"]] = 0.0
+    elif family == "supertrend":
+        pos = pd.Series(_supertrend(df, close, p["period"], p["mult"]))
     else:
         raise ValueError(family)
 
@@ -104,6 +123,37 @@ def signal(genome: dict, df: pd.DataFrame) -> np.ndarray:
     return pos.to_numpy(dtype=float, copy=True)
 
 
+def _supertrend(df: pd.DataFrame, close: pd.Series, period: int, mult: float) -> np.ndarray:
+    """1 solange der Kurs ueber dem Supertrend-Band liegt (Aufwaertstrend), sonst 0."""
+    high = df["high"].astype(float).to_numpy()
+    low = df["low"].astype(float).to_numpy()
+    c = close.to_numpy()
+    prev = np.concatenate([[c[0]], c[:-1]])
+    true_range = np.maximum(high - low, np.maximum(np.abs(high - prev), np.abs(low - prev)))
+    atr = pd.Series(true_range).ewm(alpha=1 / period, adjust=False).mean().to_numpy()
+    mid = (high + low) / 2
+    upper, lower = mid + mult * atr, mid - mult * atr
+    pos = np.zeros(len(c))
+    up = False
+    for i in range(1, len(c)):
+        if not (upper[i] < upper[i - 1] or c[i - 1] > upper[i - 1]):
+            upper[i] = upper[i - 1]
+        if not (lower[i] > lower[i - 1] or c[i - 1] < lower[i - 1]):
+            lower[i] = lower[i - 1]
+        if c[i] > upper[i - 1]:
+            up = True
+        elif c[i] < lower[i - 1]:
+            up = False
+        pos[i] = 1.0 if up else 0.0
+    pos[: period * 3] = 0.0
+    return pos
+
+
 def describe(genome: dict) -> str:
     params = ", ".join(f"{k}={v}" for k, v in genome["params"].items())
-    return f"{genome['family']}({params})"
+    text = f"{genome['family']}({params})"
+    if genome.get("symbol"):
+        text = f"{genome['symbol']} {text}"
+    if genome.get("side") == "short" or genome.get("leverage", 1) > 1:
+        text += f" [{'Short' if genome.get('side') == 'short' else 'Long'} {genome.get('leverage', 1)}x]"
+    return text

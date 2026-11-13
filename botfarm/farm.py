@@ -24,7 +24,7 @@ class Farm:
         self.treasury = self.config.start_capital  # freies Geld ohne Bot
         self.bar_count = 0
         self.last_ts: str | None = None
-        self.last_price = 0.0
+        self.prices: dict[str, float] = {}  # letzter Kurs je Coin
         self.tick_ts: str | None = None
         self.halted = ""
         self.next_id = 1
@@ -38,9 +38,29 @@ class Farm:
     def alive(self) -> list[Bot]:
         return [b for b in self.bots if b.alive]
 
+    @property
+    def last_price(self) -> float:
+        """Kurs des ersten Coins (bei nur einem Coin: der Kurs)."""
+        return self.prices.get(self.config.symbols[0], 0.0)
+
+    def symbol_of(self, bot: Bot) -> str:
+        return bot.genome.get("symbol") or self.config.symbols[0]
+
+    def price_of(self, bot: Bot) -> float:
+        return self.prices.get(self.symbol_of(bot), 0.0)
+
+    def equity_of(self, bot: Bot) -> float:
+        return bot.account.equity(self.price_of(bot))
+
+    def profit_of(self, bot: Bot) -> float:
+        return bot.total_profit(self.price_of(bot))
+
     def total_wealth(self, price: float | None = None) -> float:
-        price = self.last_price if price is None else price
-        return self.vault + self.treasury + sum(b.account.equity(price) for b in self.alive)
+        return self.vault + self.treasury + sum(
+            b.account.equity(self.price_of(b) if price is None else price) for b in self.alive)
+
+    def _frames(self, frames) -> dict:
+        return frames if isinstance(frames, dict) else {self.config.symbols[0]: frames}
 
     def _event(self, kind: str, message: str, bot: Bot | None = None, **extra) -> None:
         self.events.append(
@@ -49,20 +69,33 @@ class Farm:
         )
 
     # ------------------------------------------------------------------ ein Schritt
-    def step(self, df: pd.DataFrame, i: int) -> None:
-        """Die abgeschlossene Kerze `i` von `df` verarbeiten."""
+    def step(self, frames, i: int) -> None:
+        """Die abgeschlossene Kerze `i` verarbeiten. `frames`: Kursdaten je Coin (gleiche Zeitachse)."""
         if self.halted:
             return
         cfg = self.config
-        price = float(df["close"].iloc[i])
-        self.last_price = price
-        self.last_ts = str(df["timestamp"].iloc[i])
+        frames = self._frames(frames)
+        first = next(iter(frames.values()))
+        for symbol, df in frames.items():
+            self.prices[symbol] = float(df["close"].iloc[i])
+        self.last_ts = str(first["timestamp"].iloc[i])
         self.bar_count += 1
 
         for bot in self.alive:
-            target = self._signal(bot, df)[i]
+            df = frames.get(self.symbol_of(bot))
+            if df is None:
+                continue
+            price = self.price_of(bot)
             acct = bot.shadow if bot.status == "probation" else bot.account
-            acct.set_target(target, price, cfg.fee, cfg.slippage)
+            if bot.risky and acct.units:
+                worst = float(df["low"].iloc[i] if bot.side > 0 else df["high"].iloc[i])
+                if acct.liquidated(worst):
+                    acct.liquidate()
+                    self._kill(bot, price, "Position liquidiert (Hebel)")
+                    continue
+                acct.funding(price, cfg.funding_per_bar)
+            target = self._signal(bot, df)[i]
+            acct.set_target(target, price, cfg.fee, cfg.slippage, bot.leverage, bot.side)
             equity = acct.equity(price)
             if bot.prev_equity > 0:
                 bot.perf *= equity / bot.prev_equity
@@ -81,24 +114,37 @@ class Farm:
             self._secure_profit(bot, price)
 
         if self.bar_count % cfg.epoch_bars == 0:
-            self._epoch(df, i, price)
+            self._epoch(frames, i)
 
-        if self.total_wealth(price) < cfg.global_stop * cfg.start_capital:
-            self.halt(f"Gesamtvermoegen unter {cfg.global_stop:.0%} des Startgelds", price)
+        if self.total_wealth() < cfg.global_stop * cfg.start_capital:
+            self.halt(f"Gesamtvermoegen unter {cfg.global_stop:.0%} des Startgelds")
 
-    def tick(self, price: float, ts: str | None = None) -> None:
-        """Zwischen zwei Kerzen: aktueller Kurs. Schutz und Gewinnsicherung greifen sofort.
+    def tick(self, prices, ts: str | None = None) -> None:
+        """Zwischen zwei Kerzen: aktuelle Kurse. Schutz und Gewinnsicherung greifen sofort.
 
         Gehandelt nach Strategie wird weiter nur am Kerzenschluss; hier werden nur Verluste
-        begrenzt, Gewinne gesichert und der globale Stopp geprueft.
+        begrenzt, Gewinne gesichert, Liquidationen erkannt und der globale Stopp geprueft.
+        `prices`: Kurs je Coin, oder eine einzelne Zahl bei nur einem Coin.
         """
         if self.halted:
             return
         cfg = self.config
-        self.last_price = float(price)
+        if not isinstance(prices, dict):
+            prices = {cfg.symbols[0]: prices}
+        self.prices.update({symbol: float(p) for symbol, p in prices.items()})
         self.tick_ts = ts
         for bot in self.alive:
+            if self.symbol_of(bot) not in prices:
+                continue
+            price = self.price_of(bot)
             if bot.status != "active":
+                if bot.risky and bot.shadow and bot.shadow.liquidated(price):
+                    bot.shadow.liquidate()
+                    self._kill(bot, price, "in der Probezeit liquidiert (Hebel)")
+                continue
+            if bot.risky and bot.account.liquidated(price):
+                bot.account.liquidate()
+                self._kill(bot, price, "Position liquidiert (Hebel)")
                 continue
             equity = bot.account.equity(price)
             if bot.prev_equity > 0:
@@ -109,8 +155,8 @@ class Farm:
                 self._kill(bot, price, f"{cfg.kill_drawdown:.0%} Verlust vom Hoechststand")
                 continue
             self._secure_profit(bot, price)
-        if self.total_wealth(price) < cfg.global_stop * cfg.start_capital:
-            self.halt(f"Gesamtvermoegen unter {cfg.global_stop:.0%} des Startgelds", price)
+        if self.total_wealth() < cfg.global_stop * cfg.start_capital:
+            self.halt(f"Gesamtvermoegen unter {cfg.global_stop:.0%} des Startgelds")
 
     def _signal(self, bot: Bot, df: pd.DataFrame) -> np.ndarray:
         key = (len(df), str(df["timestamp"].iloc[-1]))
@@ -199,7 +245,7 @@ class Farm:
         if parent:
             parent.account.cash += rest
             parent.given -= rest
-            self._after_flow(parent, price, rest)
+            self._after_flow(parent, self.price_of(parent), rest)
             target = f"Bot {parent.id}"
         else:
             self.treasury += rest
@@ -207,14 +253,14 @@ class Farm:
         self._event("death", f"gestorben: {reason}. {rest:.2f} zurueck an {target}", bot, amount=rest)
 
     def halt(self, reason: str, price: float | None = None) -> None:
-        """Not-Aus: alle Positionen verkaufen, nichts mehr handeln."""
-        price = self.last_price if price is None else price
+        """Not-Aus: alle Positionen schliessen, nichts mehr handeln."""
         for bot in self.alive:
-            bot.account.set_target(0, price, self.config.fee, self.config.slippage)
+            bot.account.set_target(0, self.price_of(bot) if price is None else price,
+                                   self.config.fee, self.config.slippage)
         self.halted = reason
         self._event("halt", f"Farm angehalten: {reason}")
 
-    def _epoch(self, df: pd.DataFrame, i: int, price: float) -> None:
+    def _epoch(self, frames: dict, i: int) -> None:
         cfg = self.config
         active = [b for b in self.alive if b.status == "active"]
         profitable = set()
@@ -226,16 +272,17 @@ class Farm:
                 bot.unprofitable_epochs += 1
             bot.epoch_start_perf = bot.perf
             if bot.unprofitable_epochs >= cfg.max_unprofitable_epochs:
-                self._kill(bot, price, f"{bot.unprofitable_epochs} Wochen ohne Gewinn")
+                self._kill(bot, self.price_of(bot), f"{bot.unprofitable_epochs} Wochen ohne Gewinn")
 
-        for bot in sorted(active, key=lambda b: -b.total_profit(price)):
+        for bot in sorted(active, key=lambda b: -self.profit_of(b)):
             if not bot.alive or bot.id not in profitable or len(self.alive) >= cfg.max_bots:
                 continue
+            price = self.price_of(bot)
             in_bot_profit = bot.account.equity(price) - bot.start_capital
             capital = cfg.spawn_fraction * in_bot_profit
             if in_bot_profit < cfg.spawn_min_profit * bot.start_capital or capital < cfg.min_child_capital:
                 continue
-            bred = self._breed(bot, df, i)
+            bred = self._breed(bot, frames, i)
             if not bred:
                 continue
             out = bot.account.withdraw(capital, price, cfg.fee, cfg.slippage)
@@ -245,13 +292,13 @@ class Farm:
             self._add_bot(bred, out, parent=bot)
 
         if not self.alive and self.treasury >= cfg.min_child_capital:
-            bred = self._breed(None, df, i)
+            bred = self._breed(None, frames, i)
             if bred:
                 capital, self.treasury = self.treasury, 0.0
                 self._add_bot(bred, capital, parent=None)
 
         self.wealth_log.append(
-            {"ts": self.last_ts, "total": round(self.total_wealth(price), 4), "vault": round(self.vault, 4),
+            {"ts": self.last_ts, "total": round(self.total_wealth(), 4), "vault": round(self.vault, 4),
              "bots": len(self.alive)}
         )
 
@@ -280,28 +327,46 @@ class Farm:
         )
         return bot
 
-    def _breed(self, parent: Bot | None, df: pd.DataFrame, i: int) -> tuple[dict, dict] | None:
-        """Kandidaten erzeugen, auf vergangenen Kursen testen, den besten zurueckgeben."""
+    def _breed(self, parent: Bot | None, frames, i: int) -> tuple[dict, dict] | None:
+        """Kandidaten auf allen Coins erzeugen, auf vergangenen Kursen testen, den besten zurueckgeben."""
         cfg = self.config
+        frames = self._frames(frames)
+        symbols = list(frames)
         rng = np.random.default_rng([cfg.seed, self.bar_count, self.next_id])
         candidates = []
         for k in range(cfg.candidates):
             if parent and k < cfg.candidates * 0.6:
-                candidates.append(strategies.mutate(parent.genome, rng))
+                genome = strategies.mutate(parent.genome, rng)
+                symbol = self.symbol_of(parent) if rng.random() < 0.7 else str(rng.choice(symbols))
+                leverage = parent.leverage + int(rng.integers(-1, 2))
+                side = parent.genome.get("side", "long")
             else:
-                candidates.append(strategies.random_genome(rng))
+                genome = strategies.random_genome(rng)
+                symbol = str(rng.choice(symbols))
+                leverage = int(rng.integers(1, cfg.max_leverage + 1))
+                side = "short" if cfg.allow_short and rng.random() < 0.3 else "long"
+            if symbol not in frames:
+                symbol = symbols[0]
+            if side == "short" and not cfg.allow_short:
+                side = "long"
+            candidates.append(strategies.normalize(
+                {**genome, "symbol": symbol, "leverage": min(max(leverage, 1), cfg.max_leverage), "side": side}))
 
-        window = df.iloc[max(0, i + 1 - cfg.backtest_bars - WARMUP): i + 1]
-        warmup = min(WARMUP, len(window) // 3)
+        def window(symbol: str):
+            df = frames[symbol].iloc[max(0, i + 1 - cfg.backtest_bars - WARMUP): i + 1]
+            return df, min(WARMUP, len(df) // 3)
+
         if cfg.use_llm and not self._llm_failed:
-            candidates += self._ask_llm(parent, window, warmup)
+            symbol = self.symbol_of(parent) if parent and self.symbol_of(parent) in frames else symbols[0]
+            candidates += self._ask_llm(parent, symbol, *window(symbol))
 
         taken = {json.dumps(b.genome, sort_keys=True) for b in self.alive}
         best = None
         for genome in candidates:
             if json.dumps(genome, sort_keys=True) in taken:
                 continue
-            stats = backtest(genome, window, cfg.fee, cfg.slippage, warmup)
+            df, warmup = window(genome["symbol"])
+            stats = backtest(genome, df, cfg.fee, cfg.slippage, warmup, cfg.funding_per_bar)
             if (
                 stats["return"] <= 0
                 or stats["max_drawdown"] > cfg.backtest_max_drawdown
@@ -312,13 +377,14 @@ class Farm:
                 best = (genome, stats)
         return best
 
-    def _ask_llm(self, parent: Bot | None, window: pd.DataFrame, warmup: int) -> list[dict]:
+    def _ask_llm(self, parent: Bot | None, symbol: str, window: pd.DataFrame, warmup: int) -> list[dict]:
         from . import llm
 
         cfg = self.config
         try:
             parent_stats = backtest(parent.genome, window, cfg.fee, cfg.slippage, warmup) if parent else None
-            return llm.propose(parent.genome if parent else None, parent_stats, window, count=4)
+            proposals = llm.propose(parent.genome if parent else None, parent_stats, window, count=4)
+            return [strategies.normalize({**g, "symbol": symbol, "leverage": 1, "side": "long"}) for g in proposals]
         except Exception as exc:  # Ohne Claude geht es mit Zufalls-Varianten weiter
             self._llm_failed = True
             self._event("llm_error", f"Claude nicht erreichbar, nutze nur Zufalls-Varianten: {exc}")
@@ -326,12 +392,13 @@ class Farm:
 
     # ------------------------------------------------------------------ Start, Speichern, Laden
     @classmethod
-    def start(cls, config: FarmConfig, df: pd.DataFrame, i: int) -> "Farm":
+    def start(cls, config: FarmConfig, frames, i: int) -> "Farm":
         """Farm gruenden: bester Kandidat aus dem Backtest bis Kerze `i` wird der erste Bot."""
         farm = cls(config)
-        farm.last_ts = str(df["timestamp"].iloc[i])
-        farm.last_price = float(df["close"].iloc[i])
-        bred = farm._breed(None, df, i)
+        frames = farm._frames(frames)
+        farm.last_ts = str(next(iter(frames.values()))["timestamp"].iloc[i])
+        farm.prices = {symbol: float(df["close"].iloc[i]) for symbol, df in frames.items()}
+        bred = farm._breed(None, frames, i)
         if bred is None:  # kein Kandidat besteht den Test: Geld bleibt in der Reserve
             farm._event("wait", "Keine Strategie besteht den Backtest. Neuer Versuch nach einer Woche.")
             return farm
@@ -347,7 +414,7 @@ class Farm:
             "treasury": self.treasury,
             "bar_count": self.bar_count,
             "last_ts": self.last_ts,
-            "last_price": self.last_price,
+            "prices": self.prices,
             "tick_ts": self.tick_ts,
             "halted": self.halted,
             "next_id": self.next_id,
@@ -358,9 +425,11 @@ class Farm:
     @classmethod
     def from_dict(cls, data: dict) -> "Farm":
         farm = cls(FarmConfig.from_dict(data["config"]))
-        farm.bots = [Bot.from_dict(b) for b in data["bots"]]
-        for key in ("vault", "treasury", "bar_count", "last_ts", "last_price", "halted", "next_id", "events",
-                    "wealth_log"):
+        # Staende aus aelteren Versionen kannten nur einen Coin und einen Kurs.
+        farm.prices = data.get("prices") or {farm.config.symbols[0]: data.get("last_price", 0.0)}
+        farm.bots = [Bot.from_dict(b, farm.prices.get(b["genome"].get("symbol") or farm.config.symbols[0], 0.0))
+                     for b in data["bots"]]
+        for key in ("vault", "treasury", "bar_count", "last_ts", "halted", "next_id", "events", "wealth_log"):
             setattr(farm, key, data[key])
         farm.tick_ts = data.get("tick_ts")
         return farm

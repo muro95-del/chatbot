@@ -10,6 +10,13 @@ class FarmConfig:
     # --- Kapital ---------------------------------------------------------
     start_capital: float = 100.0  # Startgeld des ersten Bots. Es kommt nie Geld von aussen dazu.
 
+    # --- Maerkte und Hebel ----------------------------------------------
+    symbols: tuple[str, ...] = ("BTC/USDT",)  # auf diesen Coins darf gehandelt werden
+    max_leverage: int = 1  # 1 = ohne Hebel. Hoeher = Futures mit isolierter Margin
+    allow_short: bool = False  # auch auf fallende Kurse setzen
+    bar_minutes: int = 60  # Laenge einer Kerze, fuer die Finanzierungskosten
+    funding_per_hour: float = 0.0000125  # laufende Kosten einer Hebel-Position (0,01 % je 8 Stunden)
+
     # --- Handelskosten ---------------------------------------------------
     fee: float = 0.001  # 0,1 % Boersengebuehr pro Kauf/Verkauf
     slippage: float = 0.0005  # 0,05 % Kursabweichung pro Kauf/Verkauf
@@ -36,7 +43,7 @@ class FarmConfig:
     spawn_min_profit: float = 0.15  # Bot braucht +15 % Gewinn im Konto, um ein Kind zu bekommen
     spawn_fraction: float = 0.5  # Anteil des Gewinns, der an das Kind geht
     min_child_capital: float = 10.0
-    candidates: int = 12  # so viele Strategie-Varianten werden pro Kind getestet
+    candidates: int = 24  # so viele Strategie-Varianten werden pro Kind getestet
     backtest_bars: int = 1000  # Laenge des Backtests fuer Kandidaten
     backtest_max_drawdown: float = 0.25
     backtest_min_trades: int = 5
@@ -54,8 +61,9 @@ class FarmConfig:
     @classmethod
     def from_dict(cls, data: dict) -> "FarmConfig":
         data = dict(data)
-        if "milestones" in data:
-            data["milestones"] = tuple(data["milestones"])
+        for key in ("milestones", "symbols"):
+            if key in data:
+                data[key] = tuple(data[key])
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in data.items() if k in known})
 
@@ -64,3 +72,7 @@ class FarmConfig:
         if index < len(self.milestones):
             return self.milestones[index]
         return self.milestones[-1] * 2 ** (index - len(self.milestones) + 1)
+
+    @property
+    def funding_per_bar(self) -> float:
+        return self.funding_per_hour * self.bar_minutes / 60

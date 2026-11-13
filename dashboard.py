@@ -25,48 +25,55 @@ st.set_page_config(page_title="Bot-Farm", page_icon="🤖", layout="wide")
 
 @st.cache_data(show_spinner="Simulation läuft …")
 def demo_state(seed: int, capital: float) -> dict:
-    df = data.synthetic(8000, seed=seed)
+    symbols = ("BTC/USDT", "ETH/USDT", "SOL/USDT")
+    frames = data.synthetic_frames(symbols, 8000, seed=seed)
     first = WARMUP + 1000
-    farm = Farm.start(FarmConfig(start_capital=capital, seed=seed), df, first - 1)
-    for i in range(first, len(df)):
-        farm.step(df, i)
+    config = FarmConfig(start_capital=capital, seed=seed, symbols=symbols, max_leverage=3, allow_short=True)
+    farm = Farm.start(config, frames, first - 1)
+    for i in range(first, 8000):
+        farm.step(frames, i)
     state = farm.to_dict()
     state["events"] = farm.events
     return state
 
 
 def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
-    price, start = farm.last_price, farm.config.start_capital
+    start = farm.config.start_capital
     total = farm.total_wealth()
-    in_bots = sum(b.account.equity(price) for b in farm.alive)
+    in_bots = sum(farm.equity_of(b) for b in farm.alive)
 
     if demo:
         st.info("Demo mit künstlichen Zufallskursen. Sie zeigt nur die Mechanik und sagt nichts über echte Gewinne aus.")
     if farm.halted:
         st.error(f"Farm angehalten: {farm.halted}")
     if not demo:
-        st.caption(f"Kurs: **{price:,.2f}** · zuletzt aktualisiert: {getattr(farm, "tick_ts", None) or farm.last_ts}")
+        kurse = " · ".join(f"{sym.split('/')[0]} **{p:,.4g}**" for sym, p in farm.prices.items())
+        st.caption(f"Kurse: {kurse} · zuletzt aktualisiert: {getattr(farm, 'tick_ts', None) or farm.last_ts}")
     st.caption(f"Letzte Kerze: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet"
                + ("" if real else " · nur Spielgeld"))
 
     if real and real.get("account"):
         acct = real["account"]
-        worth = acct["quote_total"] + acct["base_total"] * price
+        coins = acct.get("coins") or {acct.get("base", ""): acct.get("base_total", 0.0)}
+        by_coin = {s.split("/")[0]: p for s, p in farm.prices.items()}
+        worth = acct["quote_total"] + sum(v * by_coin.get(c, 0.0) for c, v in coins.items())
         st.subheader("Dein Bitget-Konto")
         a = st.columns(4)
         a[0].metric(f"Gesamtwert ({acct['quote']})", f"{worth:,.2f}")
         a[1].metric(f"{acct['quote']} gesamt", f"{acct['quote_total']:,.2f}")
         a[2].metric(f"{acct['quote']} frei", f"{acct['quote_free']:,.2f}")
-        a[3].metric(f"{acct['base']} im Konto", f"{acct['base_total']:.6f}")
-        st.caption(f"Direkt von Bitget gelesen um {acct['ts']} (Handelskonto, {acct['base']} und {acct['quote']}). "
+        held = ", ".join(f"{v:.6f} {c}" for c, v in coins.items() if v) or "keine"
+        a[3].metric("Coins im Konto", held if len(held) < 24 else f"{sum(1 for v in coins.values() if v)} Coins")
+        st.caption(f"Direkt von Bitget gelesen um {acct['ts']} (Handelskonto, nur die Coins des Bots: {held}). "
                    "Der Bot nutzt davon nur sein Budget.")
     elif real:
         st.warning("Der echte Kontostand konnte noch nicht von Bitget gelesen werden. Schau ins Bot-Fenster.")
     if real:
-        value = real["cash"] + real["units"] * price
+        units = real["units"] if isinstance(real["units"], dict) else {real.get("symbol", ""): real["units"]}
+        value = real["cash"] + sum(u * farm.prices.get(sym, 0.0) for sym, u in units.items())
         armed = bool(real["orders"]) and real["orders"][-1]["real"]
         st.success(
-            f"**Anteil des Bots ({real['symbol']})** · Wert {value:,.2f} bei Budget {real['budget']:,.2f} "
+            f"**Anteil des Bots** · Wert {value:,.2f} bei Budget {real['budget']:,.2f} "
             f"({value / real['budget'] - 1:+.1%}) · Gebühren {real['fees']:,.2f} · {len(real['orders'])} Orders"
             + ("" if armed or not real["orders"] else " · Probelauf, es wurde nichts abgeschickt")
         )
@@ -115,12 +122,14 @@ def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
                 "Eltern": str(b.parent_id) if b.parent_id else "–",
                 "Generation": b.generation,
                 "Status": STATUS[b.status],
-                "Position": "–" if not b.alive else ("📈 investiert" if (b.shadow or b.account).units > 0 else "💤 wartet"),
+                "Coin": farm.symbol_of(b).split("/")[0],
+                "Richtung": ("Short" if b.side < 0 else "Long") + (f" {b.leverage}x" if b.leverage > 1 else ""),
+                "Position": "–" if not b.alive else ("📈 investiert" if (b.shadow or b.account).units != 0 else "💤 wartet"),
                 "Startgeld": b.start_capital,
-                "Konto": b.account.equity(price),
+                "Konto": farm.equity_of(b),
                 "Gesichert": b.secured,
                 "An Kinder": b.given,
-                "Gewinn": b.total_profit(price),
+                "Gewinn": farm.profit_of(b),
                 "Strategie": strategies.describe(b.genome),
                 "Todesursache": b.death_reason,
             }

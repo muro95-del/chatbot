@@ -68,13 +68,41 @@ def from_exchange(exchange: str, symbol: str, timeframe: str = "1h", bars: int =
     return df.tail(bars).reset_index(drop=True)
 
 
+def frames_from_exchange(exchange: str, symbols, timeframe: str = "1h", bars: int = 1500) -> dict:
+    """Kursdaten mehrerer Coins auf derselben Zeitachse. Nicht abrufbare Coins werden ausgelassen."""
+    frames = {}
+    for symbol in symbols:
+        try:
+            frames[symbol] = from_exchange(exchange, symbol, timeframe, bars)
+        except Exception as exc:
+            print(f"  {symbol} nicht abrufbar ({type(exc).__name__}), wird ausgelassen.")
+    if not frames:
+        raise ConnectionError("Kein Coin abrufbar")
+    return align(frames)
+
+
+def align(frames: dict) -> dict:
+    """Nur Kerzen behalten, die es bei allen Coins gibt, damit Index i ueberall dieselbe Zeit meint."""
+    common = None
+    for df in frames.values():
+        stamps = set(df["timestamp"])
+        common = stamps if common is None else common & stamps
+    return {s: df[df["timestamp"].isin(common)].sort_values("timestamp").reset_index(drop=True)
+            for s, df in frames.items()}
+
+
+def synthetic_frames(symbols, bars: int = 6000, seed: int = 1) -> dict:
+    return {symbol: synthetic(bars, seed=seed + k) for k, symbol in enumerate(symbols)}
+
+
 _tickers: dict = {}
 
 
-def last_price(exchange: str, symbol: str) -> float:
-    """Aktueller Kurs (oeffentlich, ohne Schluessel)."""
+def last_prices(exchange: str, symbols) -> dict:
+    """Aktuelle Kurse (oeffentlich, ohne Schluessel)."""
     import ccxt
 
     if exchange not in _tickers:
         _tickers[exchange] = getattr(ccxt, exchange)({"enableRateLimit": True})
-    return float(_tickers[exchange].fetch_ticker(symbol)["last"])
+    tickers = _tickers[exchange].fetch_tickers(list(symbols))
+    return {s: float(t["last"]) for s, t in tickers.items() if s in symbols and t.get("last")}
