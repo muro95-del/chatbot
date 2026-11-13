@@ -46,7 +46,8 @@ class LiveExecutor:
             if self.state["symbol"] != symbol:
                 raise SystemExit(f"Der gespeicherte Stand gehoert zu {self.state['symbol']}, nicht zu {symbol}.")
         else:
-            self.state = {"symbol": symbol, "budget": budget, "cash": budget, "units": 0.0, "fees": 0.0, "orders": []}
+            self.state = {"symbol": symbol, "budget": budget, "cash": budget, "units": 0.0, "fees": 0.0, "orders": [],
+                          "real_orders": bool(real_orders)}
 
     # ------------------------------------------------------------------ Pruefungen
     def check_balance(self) -> None:

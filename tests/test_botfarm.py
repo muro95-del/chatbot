@@ -440,3 +440,26 @@ def test_connect_switches_bitget_to_unified_account(monkeypatch):
     ex = live.connect("bitget", uta=True)
     assert ex.password == "p" and ex.loaded_with == {"uta": True}
     assert live.connect("bitget").loaded_with == {}
+
+
+def test_dry_run_state_is_archived_not_reused_for_real_money(tmp_path, monkeypatch):
+    from botfarm import cli
+    import botfarm.live as live_module
+
+    full = data.synthetic(2200, seed=5)
+    state_dir = tmp_path / "botfarm_state"
+    ex = FakeExchange(price=float(full["close"].iloc[1499]))
+    monkeypatch.setattr(cli, "STATE_DIR", str(state_dir))
+    monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[:1500].tail(1500).reset_index(drop=True))
+    monkeypatch.setattr(live_module, "connect", lambda name, uta=False: ex)
+    base = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--capital", "100", "--once"]
+
+    cli.main(base)  # Probelauf
+    assert json.load(open(state_dir / "live.json"))["real_orders"] is False
+    cli.main(base + ["--real-orders"])  # Echtgeld: Probelauf-Stand wird verschoben, frischer Start
+    archived = list(tmp_path.glob("botfarm_state_probelauf_*"))
+    assert len(archived) == 1 and (archived[0] / "live.json").exists()
+    real = json.load(open(state_dir / "live.json"))
+    assert real["real_orders"] is True and real["cash"] + real["units"] * ex.price == pytest.approx(100, abs=1)
+    with pytest.raises(SystemExit, match="ECHTEM"):
+        cli.main(base)  # Probelauf darf einen Echtgeld-Stand nicht ueberschreiben

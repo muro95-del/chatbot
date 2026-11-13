@@ -8,6 +8,18 @@ Es gibt drei Betriebsarten: Spielgeld (`paper`), Probelauf an der echten Börse 
 Orders nur an) und echte Orders (`live --real-orders`). Die Anbindung für echte Orders ist nur
 gegen eine nachgebaute Börse getestet, noch nie gegen eine echte.
 
+## Windows: per Doppelklick starten
+
+Im Ordner liegen drei Dateien zum Doppelklicken:
+
+- `Bot starten - Probelauf.bat`: verbindet sich mit Bitget, kauft aber nichts.
+- `Bot starten - ECHTGELD.bat`: handelt mit echtem Geld, nach Eingabe von `JA`.
+- `Bot stoppen (Not-Aus).bat`: der laufende Bot verkauft alles und hält an.
+
+Beim ersten Start werden die Pakete installiert und die Bitget-API-Daten abgefragt. Sie werden
+im Windows-Benutzerkonto gespeichert, nicht im Ordner. Budget und Handelspaar stehen oben in
+`windows/run.bat`. Das Fenster muss offen bleiben, solange der Bot laufen soll.
+
 ## Starten
 
 ```bash

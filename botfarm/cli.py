@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 
@@ -88,10 +89,20 @@ def _run(args, live: bool) -> None:
 
     if not args.exchange:
         raise SystemExit("Bitte --exchange angeben (z. B. --exchange bitget --symbol BTC/USDT)")
-    os.makedirs(STATE_DIR, exist_ok=True)
     state = os.path.join(STATE_DIR, "state.json")
     live_file = os.path.join(STATE_DIR, "live.json")
     stop_file = os.path.join(STATE_DIR, "STOP")
+    if live and os.path.exists(live_file):
+        with open(live_file) as fh:
+            was_real = bool(json.load(fh).get("real_orders"))
+        if was_real != bool(args.real_orders):
+            if not args.real_orders:
+                raise SystemExit("Hier laeuft schon ein Bot mit ECHTEM Geld. Ein Probelauf wuerde dessen Stand ueberschreiben.")
+            # Probelauf-Stand nie als echtes Konto weiterfuehren: zur Seite legen, nichts loeschen.
+            archive = f"{STATE_DIR}_probelauf_{time.strftime('%Y%m%d_%H%M%S')}"
+            os.replace(STATE_DIR, archive)
+            print(f"Alter Probelauf-Stand wurde nach {archive} verschoben. Echtgeld startet frisch.")
+    os.makedirs(STATE_DIR, exist_ok=True)
     if os.path.exists(state) and os.path.exists(live_file) != live:
         other = "echtem Geld" if not live else "Spielgeld"
         raise SystemExit(f"In {STATE_DIR}/ liegt ein Stand mit {other}. Verschiebe oder loesche den Ordner zuerst.")
@@ -106,7 +117,13 @@ def _run(args, live: bool) -> None:
         import sys
 
         app = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "dashboard.py")
-        dashboard = subprocess.Popen([sys.executable, "-m", "streamlit", "run", app])
+        # headless: sonst fragt Streamlit beim ersten Start im Fenster nach einer E-Mail und blockiert
+        dashboard = subprocess.Popen([sys.executable, "-m", "streamlit", "run", app, "--server.headless", "true",
+                                      "--browser.gatherUsageStats", "false", "--server.port", "8501"])
+        import threading
+        import webbrowser
+
+        threading.Timer(4, webbrowser.open, ["http://localhost:8501"]).start()
     try:
         _loop(args, live, state, live_file, stop_file, check_file)
     finally:

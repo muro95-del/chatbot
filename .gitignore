@@ -164,3 +164,7 @@ cython_debug/
 #.idea/
 # Bot-Farm: gespeicherter Stand
 botfarm_state/
+
+# Bot-Farm: Installationsmarker und archivierte Probelaeufe
+.installiert
+botfarm_state_*/
