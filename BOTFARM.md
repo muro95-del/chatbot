@@ -33,7 +33,7 @@ Test auf alten Kursen einer Börse (hier Bitget, Bitcoin gegen USDT):
 python -m botfarm simulate --exchange bitget --symbol BTC/USDT --bars 8000 -v
 ```
 
-Dauerbetrieb mit Spielgeld (prüft alle 5 Minuten auf neue Stundenkerzen, Stand liegt in `botfarm_state/`):
+Dauerbetrieb mit Spielgeld (Stand liegt in `botfarm_state/`):
 
 ```bash
 python -m botfarm paper --exchange bitget --symbol BTC/USDT --capital 100
@@ -45,7 +45,7 @@ Stand ansehen:
 python -m botfarm status
 ```
 
-Dashboard im Browser (Vermögen, Tresor, alle Bots, Ereignisse; lädt jede Minute neu):
+Dashboard im Browser (Kurs, Vermögen, Tresor, alle Bots, Ereignisse; live):
 
 ```bash
 streamlit run dashboard.py
@@ -106,6 +106,17 @@ So ist das Geld geschützt:
 
 Buchführung und echtes Konto weichen leicht voneinander ab, weil echte Orders nie genau zum
 Schlusskurs ausgeführt werden. `status` und das Dashboard zeigen beide Werte.
+
+## Echtzeit
+
+Im Dauerbetrieb (`paper` und `live`) fragt der Bot alle 10 Sekunden den aktuellen Kurs ab
+(`--tick`). Dabei greifen sofort: die Verlustgrenze pro Bot, die Gewinnsicherung und der globale
+Stopp. Gekauft und verkauft nach Strategie wird weiterhin am Schluss jeder Kerze; die
+Kerzenlänge bestimmt `--timeframe` (die Windows-Startdateien nutzen 15 Minuten). Alle Zeitangaben
+der Farm zählen in Kerzen: Bei 15-Minuten-Kerzen dauert eine „Woche“ aus 168 Kerzen 42 Stunden.
+
+Kürzere Kerzen bedeuten mehr Trades und damit mehr Gebühren. Das Dashboard aktualisiert sich
+alle 5 Sekunden.
 
 ## Wie es funktioniert
 

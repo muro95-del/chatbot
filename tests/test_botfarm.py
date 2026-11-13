@@ -463,3 +463,55 @@ def test_dry_run_state_is_archived_not_reused_for_real_money(tmp_path, monkeypat
     assert real["real_orders"] is True and real["cash"] + real["units"] * ex.price == pytest.approx(100, abs=1)
     with pytest.raises(SystemExit, match="ECHTEM"):
         cli.main(base)  # Probelauf darf einen Echtgeld-Stand nicht ueberschreiben
+
+
+# ---------------- Echtzeit
+def test_tick_kills_and_secures_between_candles():
+    cfg = FarmConfig(fee=0, slippage=0, milestones=(0.5,), epoch_bars=10**9, global_stop=0.1)
+    farm = run(one_bot_farm(cfg), frame(np.full(30, 100.0)))
+    bot = farm.bots[0]
+    assert bot.account.units == pytest.approx(1.0)
+
+    farm.tick(160.0, "t1")  # +60 %: Stufe 0,5 sofort erreicht, ohne auf die Kerze zu warten
+    assert farm.vault > 0 and farm.last_price == 160.0 and farm.tick_ts == "t1"
+    secured = farm.vault
+    farm.tick(160.0, "t2")
+    assert farm.vault == secured  # derselbe Kurs sichert nicht doppelt
+
+    farm.tick(100.0, "t3")  # Absturz zwischen zwei Kerzen: sofort raus
+    assert bot.status == "dead" and bot.account.units == 0
+    assert farm.treasury + farm.vault == pytest.approx(farm.total_wealth())
+    assert sum(b.total_profit(100.0) for b in farm.bots) == pytest.approx(farm.total_wealth() - 100)
+
+    state = Farm.from_dict(farm.to_dict())
+    assert state.tick_ts == "t3"
+    old = farm.to_dict(); old.pop("tick_ts")
+    assert Farm.from_dict(old).tick_ts is None  # aeltere gespeicherte Staende laden weiter
+
+
+def test_live_loop_follows_price_in_real_time(tmp_path, monkeypatch):
+    from botfarm import cli
+    import botfarm.live as live_module
+
+    full = data.synthetic(2200, seed=5)
+    visible = {"n": 1500}
+    close = float(full["close"].iloc[1999])
+    ex = FakeExchange(price=close)
+    prices = iter([close, close * 0.5])  # zweiter Tick: Kurs halbiert sich
+    clock = {"t": 0.0}
+    monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[: visible["n"]].tail(1500).reset_index(drop=True))
+    monkeypatch.setattr(cli.data, "last_price", lambda *a: next(prices))
+    monkeypatch.setattr(cli.time, "sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    monkeypatch.setattr(cli.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(live_module, "connect", lambda name, uta=False: ex)
+    argv = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--capital", "100", "--real-orders"]
+
+    cli.main(argv + ["--once"])
+    visible["n"] = 2000
+    cli.main(argv + ["--tick", "10", "--interval", "60"])  # endet von selbst: der Absturz loest den Stopp aus
+    farm = Farm.load(str(tmp_path / "state.json"))
+    real = json.load(open(tmp_path / "live.json"))
+    assert farm.halted and not any(b.account.units for b in farm.bots)
+    assert real["units"] == pytest.approx(0, abs=1e-6) and ex.sent[-1][0] == "sell"
+    assert clock["t"] == 20  # reagiert beim zweiten Tick, nicht erst bei der naechsten Kerze

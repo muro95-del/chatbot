@@ -6,6 +6,8 @@ cd /d "%~dp0.."
 rem ============ Einstellungen (hier aendern) ============
 set CAPITAL=50
 set SYMBOL=BTC/USDT
+rem Kerzenlaenge: 5m, 15m oder 1h. Kuerzer = mehr Trades, aber auch mehr Gebuehren.
+set TIMEFRAME=15m
 rem =======================================================
 
 title Bot-Farm (%1)
@@ -71,7 +73,7 @@ echo.
 echo Bot laeuft. Das Dashboard oeffnet sich gleich im Browser.
 echo Dieses Fenster offen lassen. Beenden: Fenster schliessen oder Strg+C.
 echo.
-py -3.14 -m botfarm live --exchange bitget --symbol %SYMBOL% --capital %CAPITAL% --uta --dashboard %EXTRA%
+py -3.14 -m botfarm live --exchange bitget --symbol %SYMBOL% --timeframe %TIMEFRAME% --capital %CAPITAL% --uta --dashboard %EXTRA%
 echo.
 echo Der Bot wurde beendet.
 pause
@@ -84,7 +86,7 @@ echo.
 echo Bot laeuft mit SPIELGELD (%CAPITAL% USDT, erfunden). Das Dashboard oeffnet sich gleich im Browser.
 echo Dieses Fenster offen lassen. Beenden: Fenster schliessen oder Strg+C.
 echo.
-py -3.14 -m botfarm paper --exchange bitget --symbol %SYMBOL% --capital %CAPITAL% --dashboard
+py -3.14 -m botfarm paper --exchange bitget --symbol %SYMBOL% --timeframe %TIMEFRAME% --capital %CAPITAL% --dashboard
 echo.
 echo Der Bot wurde beendet.
 pause

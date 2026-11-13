@@ -25,6 +25,7 @@ class Farm:
         self.bar_count = 0
         self.last_ts: str | None = None
         self.last_price = 0.0
+        self.tick_ts: str | None = None
         self.halted = ""
         self.next_id = 1
         self.events: list[dict] = []
@@ -82,6 +83,32 @@ class Farm:
         if self.bar_count % cfg.epoch_bars == 0:
             self._epoch(df, i, price)
 
+        if self.total_wealth(price) < cfg.global_stop * cfg.start_capital:
+            self.halt(f"Gesamtvermoegen unter {cfg.global_stop:.0%} des Startgelds", price)
+
+    def tick(self, price: float, ts: str | None = None) -> None:
+        """Zwischen zwei Kerzen: aktueller Kurs. Schutz und Gewinnsicherung greifen sofort.
+
+        Gehandelt nach Strategie wird weiter nur am Kerzenschluss; hier werden nur Verluste
+        begrenzt, Gewinne gesichert und der globale Stopp geprueft.
+        """
+        if self.halted:
+            return
+        cfg = self.config
+        self.last_price = float(price)
+        self.tick_ts = ts
+        for bot in self.alive:
+            if bot.status != "active":
+                continue
+            equity = bot.account.equity(price)
+            if bot.prev_equity > 0:
+                bot.perf *= equity / bot.prev_equity
+            bot.prev_equity = equity
+            bot.peak_equity = max(bot.peak_equity, equity)
+            if equity < bot.peak_equity * (1 - cfg.kill_drawdown):
+                self._kill(bot, price, f"{cfg.kill_drawdown:.0%} Verlust vom Hoechststand")
+                continue
+            self._secure_profit(bot, price)
         if self.total_wealth(price) < cfg.global_stop * cfg.start_capital:
             self.halt(f"Gesamtvermoegen unter {cfg.global_stop:.0%} des Startgelds", price)
 
@@ -321,6 +348,7 @@ class Farm:
             "bar_count": self.bar_count,
             "last_ts": self.last_ts,
             "last_price": self.last_price,
+            "tick_ts": self.tick_ts,
             "halted": self.halted,
             "next_id": self.next_id,
             "events": self.events[-500:],
@@ -334,6 +362,7 @@ class Farm:
         for key in ("vault", "treasury", "bar_count", "last_ts", "last_price", "halted", "next_id", "events",
                     "wealth_log"):
             setattr(farm, key, data[key])
+        farm.tick_ts = data.get("tick_ts")
         return farm
 
     def save(self, path: str) -> None:

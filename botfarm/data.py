@@ -66,3 +66,15 @@ def from_exchange(exchange: str, symbol: str, timeframe: str = "1h", bars: int =
     df = df[df["timestamp"] + step <= ex.milliseconds()]  # nur abgeschlossene Kerzen
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
     return df.tail(bars).reset_index(drop=True)
+
+
+_tickers: dict = {}
+
+
+def last_price(exchange: str, symbol: str) -> float:
+    """Aktueller Kurs (oeffentlich, ohne Schluessel)."""
+    import ccxt
+
+    if exchange not in _tickers:
+        _tickers[exchange] = getattr(ccxt, exchange)({"enableRateLimit": True})
+    return float(_tickers[exchange].fetch_ticker(symbol)["last"])

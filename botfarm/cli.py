@@ -164,29 +164,47 @@ def _loop(args, live: bool, state: str, live_file: str, stop_file: str, check_fi
                 new = new[-1:]
             for i in new:
                 farm.step(df, i)
-        if os.path.exists(stop_file) and not farm.halted:
-            farm.halt("Not-Aus per STOP-Datei")
-        farm.save(state)
-        shown = _print_events(farm, shown)
-        total = farm.total_wealth()
-        line = f"{farm.last_ts}  Vermoegen {total:.2f}  gesichert {farm.vault:.2f}  Bots {len(farm.alive)}"
-        if executor:
-            try:
-                order = executor.sync(farm, farm.last_price)
-            except RuntimeError as exc:  # unklare Order: sperren, bis ein Mensch nachgesehen hat
-                with open(check_file, "w") as fh:
-                    fh.write(str(exc))
-                raise SystemExit(str(exc))
-            if order:
-                verb = "ORDER" if order["real"] else "Probelauf, wuerde ordern"
-                side = "Kauf" if order["side"] == "buy" else "Verkauf"
-                print(f"  {verb}: {side} {order['amount']:.8f} zu {order['price']:.2f} ({order['cost']:.2f})")
-            executor.save()
-            line += f"  echt {executor.value(farm.last_price):.2f}"
-        print(line)
+        shown = _settle(farm, executor, state, stop_file, check_file, shown, summary=True)
         if farm.halted or args.once:
             return
-        time.sleep(args.interval)
+        # Bis zur naechsten Kerzen-Abfrage: Kurs in Echtzeit verfolgen.
+        deadline = time.time() + args.interval
+        while time.time() < deadline and not farm.halted:
+            time.sleep(args.tick)
+            try:
+                price = data.last_price(args.exchange, args.symbol)
+            except Exception:
+                continue  # kurzer Netzwerkfehler: beim naechsten Tick erneut
+            farm.tick(price, time.strftime("%Y-%m-%d %H:%M:%S"))
+            shown = _settle(farm, executor, state, stop_file, check_file, shown, summary=False)
+        if farm.halted:
+            return
+
+
+def _settle(farm: Farm, executor, state: str, stop_file: str, check_file: str, shown: int, summary: bool) -> int:
+    """Nach jedem Schritt: Not-Aus pruefen, speichern, Ereignisse zeigen, echte Position angleichen."""
+    if os.path.exists(stop_file) and not farm.halted:
+        farm.halt("Not-Aus per STOP-Datei")
+    farm.save(state)
+    shown = _print_events(farm, shown)
+    line = (f"{farm.last_ts}  Kurs {farm.last_price:.2f}  Vermoegen {farm.total_wealth():.2f}  "
+            f"gesichert {farm.vault:.2f}  Bots {len(farm.alive)}")
+    if executor:
+        try:
+            order = executor.sync(farm, farm.last_price)
+        except RuntimeError as exc:  # unklare Order: sperren, bis ein Mensch nachgesehen hat
+            with open(check_file, "w") as fh:
+                fh.write(str(exc))
+            raise SystemExit(str(exc))
+        if order:
+            verb = "ORDER" if order["real"] else "Probelauf, wuerde ordern"
+            side = "Kauf" if order["side"] == "buy" else "Verkauf"
+            print(f"  {verb}: {side} {order['amount']:.8f} zu {order['price']:.2f} ({order['cost']:.2f})")
+        executor.save()
+        line += f"  echt {executor.value(farm.last_price):.2f}"
+    if summary:
+        print(line)
+    return shown
 
 
 def status(_args) -> None:
@@ -219,7 +237,7 @@ def main(argv=None) -> None:
         p.add_argument("--capital", type=float, default=100.0, help="Startgeld des ersten Bots")
         p.add_argument("--exchange", help="Boerse fuer echte Kursdaten, z. B. kraken oder binance")
         p.add_argument("--symbol", default="BTC/EUR")
-        p.add_argument("--timeframe", default="1h")
+        p.add_argument("--timeframe", default="1h", help="Kerzenlaenge, z. B. 5m, 15m, 1h")
         p.add_argument("--csv", help="Kursdaten aus CSV (timestamp,open,high,low,close,volume)")
         p.add_argument("--llm", action="store_true", help="Claude schlaegt zusaetzliche Strategien vor")
         p.add_argument("--seed", type=int, default=7)
@@ -228,7 +246,8 @@ def main(argv=None) -> None:
             p.add_argument("--bars", type=int, default=8000)
             p.add_argument("--verbose", "-v", action="store_true", help="alle Ereignisse zeigen")
         else:
-            p.add_argument("--interval", type=int, default=300, help="Sekunden zwischen zwei Abfragen")
+            p.add_argument("--interval", type=int, default=60, help="Sekunden zwischen zwei Kerzen-Abfragen")
+            p.add_argument("--tick", type=int, default=10, help="Sekunden zwischen zwei Kurs-Abfragen")
             p.add_argument("--once", action="store_true", help="nur einen Durchlauf")
             p.add_argument("--dashboard", action="store_true", help="Dashboard im Browser mitstarten")
         if name == "live":

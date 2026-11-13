@@ -44,7 +44,9 @@ def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
         st.info("Demo mit künstlichen Zufallskursen. Sie zeigt nur die Mechanik und sagt nichts über echte Gewinne aus.")
     if farm.halted:
         st.error(f"Farm angehalten: {farm.halted}")
-    st.caption(f"Stand: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet"
+    if not demo:
+        st.caption(f"Kurs: **{price:,.2f}** · zuletzt aktualisiert: {farm.tick_ts or farm.last_ts}")
+    st.caption(f"Letzte Kerze: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet"
                + ("" if real else " · nur Spielgeld"))
 
     if real:
@@ -100,6 +102,7 @@ def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
                 "Eltern": str(b.parent_id) if b.parent_id else "–",
                 "Generation": b.generation,
                 "Status": STATUS[b.status],
+                "Position": "–" if not b.alive else ("📈 investiert" if (b.shadow or b.account).units > 0 else "💤 wartet"),
                 "Startgeld": b.start_capital,
                 "Konto": b.account.equity(price),
                 "Gesichert": b.secured,
@@ -134,7 +137,7 @@ with st.sidebar:
         seed = st.number_input("Zufalls-Startwert", min_value=1, max_value=999, value=2)
         capital = st.number_input("Startgeld", min_value=10.0, value=100.0, step=10.0)
     else:
-        auto = st.toggle("Jede Minute neu laden", value=True)
+        auto = st.toggle("Live aktualisieren (alle 5 Sekunden)", value=True)
         st.button("Jetzt neu laden")
 
 if source == "Demo-Simulation":
@@ -143,7 +146,7 @@ elif not has_state:
     st.warning("Es läuft noch keine Farm. Starte sie in einem Terminal und lade dann neu:")
     st.code("python -m botfarm paper --exchange bitget --symbol BTC/USDT --capital 100", language="bash")
 else:
-    @st.fragment(run_every=60 if auto else None)
+    @st.fragment(run_every=5 if auto else None)
     def live() -> None:
         real = None
         if os.path.exists(LIVE_FILE):
