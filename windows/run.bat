@@ -19,6 +19,9 @@ if errorlevel 1 (
   pause & exit /b 1
 )
 
+rem --- Altes Dashboard beenden, falls noch eins laeuft (sonst zeigt es veralteten Code) ---
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8501" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
+
 rem --- Neueste Version holen (Fehler sind egal, z. B. ohne Internet) ---
 git pull --quiet >nul 2>&1
 

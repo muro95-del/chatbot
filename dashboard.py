@@ -45,7 +45,7 @@ def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
     if farm.halted:
         st.error(f"Farm angehalten: {farm.halted}")
     if not demo:
-        st.caption(f"Kurs: **{price:,.2f}** · zuletzt aktualisiert: {farm.tick_ts or farm.last_ts}")
+        st.caption(f"Kurs: **{price:,.2f}** · zuletzt aktualisiert: {getattr(farm, "tick_ts", None) or farm.last_ts}")
     st.caption(f"Letzte Kerze: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet"
                + ("" if real else " · nur Spielgeld"))
 
