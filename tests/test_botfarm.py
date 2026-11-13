@@ -276,3 +276,141 @@ def test_paper_loop_resumes_and_obeys_stop_file(tmp_path, monkeypatch, capsys):
     assert farm.halted and all(b.account.units == 0 for b in farm.bots)
     cli.main(["status"])
     assert "ANGEHALTEN" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- Echte Orders
+class FakeExchange:
+    """Boerse zum Testen: fuehrt Market-Orders zum gesetzten Kurs mit 0,1 % Gebuehr aus."""
+
+    has = {"createMarketBuyOrderWithCost": True}
+
+    def __init__(self, price=100.0, free=1000.0):
+        self.price, self.free, self.sent = price, free, []
+
+    def market(self, symbol):
+        return {"base": "BTC", "quote": "USDT", "limits": {"amount": {"min": 0.0001}, "cost": {"min": 1.0}}}
+
+    def amount_to_precision(self, symbol, amount):
+        return f"{int(amount * 1e6) / 1e6:.6f}"
+
+    def cost_to_precision(self, symbol, cost):
+        return f"{cost:.4f}"
+
+    def fetch_balance(self):
+        return {"free": {"USDT": self.free}}
+
+    def create_market_buy_order_with_cost(self, symbol, cost):
+        self.sent.append(("buy", cost))
+        return {"id": str(len(self.sent)), "filled": cost / self.price, "cost": cost,
+                "fee": {"cost": cost * 0.001, "currency": "USDT"}}
+
+    def create_order(self, symbol, kind, side, amount):
+        self.sent.append((side, amount))
+        cost = amount * self.price
+        return {"id": str(len(self.sent)), "filled": amount, "cost": cost,
+                "fee": {"cost": cost * 0.001, "currency": "USDT"}}
+
+
+def farm_holding(units, halted=""):
+    bots = [types.SimpleNamespace(account=types.SimpleNamespace(units=u)) for u in units]
+    return types.SimpleNamespace(alive=bots, halted=halted, last_ts="2024-01-01")
+
+
+def test_live_executor_follows_net_position_within_budget(tmp_path):
+    from botfarm.live import LiveExecutor
+
+    ex = FakeExchange(price=100.0)
+    live = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "live.json"), real_orders=True)
+    live.check_balance()
+
+    order = live.sync(farm_holding([0.2, 0.1]), 100.0)  # Bots halten zusammen 0,3 = 30 USDT
+    assert order["side"] == "buy" and live.state["units"] == pytest.approx(0.3)
+    assert live.state["cash"] == pytest.approx(50 - 30 - 0.03)
+    assert live.sync(farm_holding([0.2, 0.1]), 100.0) is None  # nichts zu tun: keine zweite Order
+
+    live.sync(farm_holding([5.0]), 100.0)  # Buch will 500 USDT, Budget erlaubt nur den Rest
+    assert live.state["cash"] >= 0 and live.state["units"] < 0.5
+    spent = sum(c for side, c in ex.sent if side == "buy")
+    assert spent <= 50.0
+
+    live.sync(farm_holding([0.3], halted="Not-Aus"), 100.0)  # Halt: alles verkaufen
+    assert live.state["units"] == pytest.approx(0.0, abs=1e-6) and ex.sent[-1][0] == "sell"
+    assert live.value(100.0) == pytest.approx(50 - live.state["fees"], abs=1e-3)
+
+    resumed = LiveExecutor(ex, "BTC/USDT", 999.0, str(tmp_path / "live.json"), real_orders=True)
+    assert resumed.state["budget"] == 50.0 and resumed.state["cash"] == pytest.approx(live.state["cash"])
+    with pytest.raises(SystemExit):
+        LiveExecutor(ex, "ETH/USDT", 50.0, str(tmp_path / "live.json"), real_orders=True)
+
+
+def test_live_executor_dry_run_and_safety_checks(tmp_path, monkeypatch):
+    from botfarm.live import LiveExecutor
+
+    ex = FakeExchange(price=100.0, free=20.0)
+    dry = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "dry.json"), real_orders=False)
+    order = dry.sync(farm_holding([0.2]), 100.0)
+    assert order["real"] is False and ex.sent == []  # Probelauf schickt nichts ab
+    assert dry.sync(farm_holding([0.200001]), 100.0) is None  # unter der Mindestgroesse
+
+    real = LiveExecutor(ex, "BTC/USDT", 50.0, str(tmp_path / "real.json"), real_orders=True)
+    with pytest.raises(SystemExit):
+        real.check_balance()  # nur 20 frei, Bot braeuchte 50
+
+    ex.create_market_buy_order_with_cost = lambda symbol, cost: {"id": "x"}
+    ex.fetch_order = lambda oid, symbol: {"id": "x"}
+    import botfarm.live as live_module
+    monkeypatch.setattr(live_module.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError):
+        real.sync(farm_holding([0.2]), 100.0)  # unklare Ausfuehrung: anhalten statt raten
+    assert real.state["units"] == 0.0 and real.state["cash"] == 50.0
+
+
+def test_live_command_runs_and_refuses_to_mix_with_paper(tmp_path, monkeypatch, capsys):
+    from botfarm import cli
+    import botfarm.live as live_module
+
+    full = data.synthetic(2200, seed=5)
+    visible = {"n": 1500}
+    ex = FakeExchange(price=float(full["close"].iloc[1999]))
+    monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[: visible["n"]].tail(1500).reset_index(drop=True))
+    monkeypatch.setattr(live_module, "connect", lambda name: ex)
+    argv = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--capital", "100", "--once", "--real-orders"]
+
+    cli.main(argv)
+    visible["n"] = 2000
+    cli.main(argv)
+    real = json.load(open(tmp_path / "live.json"))
+    farm = Farm.load(str(tmp_path / "state.json"))
+    booked = sum(b.account.units for b in farm.alive)
+    assert booked > 0 and farm.bar_count == 1  # verpasste Kerzen werden nicht nachgespielt
+    assert real["units"] == pytest.approx(booked, rel=0.01)
+    assert real["cash"] >= 0 and sum(c for s, c in ex.sent if s == "buy") <= 100.0
+    assert real["cash"] + real["units"] * farm.last_price == pytest.approx(farm.total_wealth(), rel=0.01)
+    cli.main(["status"])
+    assert "Echtes Konto" in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        cli.main(["paper", "--exchange", "bitget", "--once"])
+
+
+def test_unclear_order_locks_live_mode_until_checked(tmp_path, monkeypatch):
+    from botfarm import cli
+    import botfarm.live as live_module
+
+    full = data.synthetic(2200, seed=5)
+    visible = {"n": 1500}
+    ex = FakeExchange(price=float(full["close"].iloc[1999]))
+    ex.create_market_buy_order_with_cost = lambda symbol, cost: {"id": "x"}
+    ex.fetch_order = lambda oid, symbol: {"id": "x"}
+    monkeypatch.setattr(live_module.time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[: visible["n"]].tail(1500).reset_index(drop=True))
+    monkeypatch.setattr(live_module, "connect", lambda name: ex)
+    argv = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--once", "--real-orders"]
+    cli.main(argv)
+    visible["n"] = 2000
+    with pytest.raises(SystemExit):
+        cli.main(argv)
+    assert (tmp_path / "BOERSE_PRUEFEN").exists()
+    with pytest.raises(SystemExit, match="Gesperrt"):
+        cli.main(argv)  # kein zweiter Kaufversuch, solange niemand nachgesehen hat

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import altair as alt
@@ -13,6 +14,7 @@ from botfarm.cli import STATE_DIR
 from botfarm.farm import WARMUP
 
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
+LIVE_FILE = os.path.join(STATE_DIR, "live.json")
 BLUE, ORANGE = "#2a78d6", "#eb6834"
 STATUS = {"active": "🟢 aktiv", "probation": "🟡 Probezeit", "dead": "⚫ gestorben"}
 EVENT = {"birth": "🐣 Geburt", "activate": "✅ Start", "secure": "🔒 Sicherung", "death": "💀 Tod",
@@ -33,7 +35,7 @@ def demo_state(seed: int, capital: float) -> dict:
     return state
 
 
-def render(farm: Farm, demo: bool) -> None:
+def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
     price, start = farm.last_price, farm.config.start_capital
     total = farm.total_wealth()
     in_bots = sum(b.account.equity(price) for b in farm.alive)
@@ -42,7 +44,19 @@ def render(farm: Farm, demo: bool) -> None:
         st.info("Demo mit künstlichen Zufallskursen. Sie zeigt nur die Mechanik und sagt nichts über echte Gewinne aus.")
     if farm.halted:
         st.error(f"Farm angehalten: {farm.halted}")
-    st.caption(f"Stand: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet · nur Spielgeld")
+    st.caption(f"Stand: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet"
+               + ("" if real else " · nur Spielgeld"))
+
+    if real:
+        value = real["cash"] + real["units"] * price
+        armed = bool(real["orders"]) and real["orders"][-1]["real"]
+        st.success(
+            f"**Echtes Konto ({real['symbol']})** · Wert {value:,.2f} bei Budget {real['budget']:,.2f} "
+            f"({value / real['budget'] - 1:+.1%}) · Gebühren {real['fees']:,.2f} · {len(real['orders'])} Orders"
+            + ("" if armed or not real["orders"] else " · Probelauf, es wurde nichts abgeschickt")
+        )
+        st.caption("Die Zahlen darunter sind die Buchführung der Farm. Sie weicht leicht vom echten Konto ab, "
+                   "weil echte Ausführungen nie genau zum Schlusskurs passieren.")
 
     cols = st.columns(5)
     cols[0].metric("Gesamtvermögen", f"{total:,.2f}", f"{total / start - 1:+.1%} seit Start")
@@ -127,10 +141,14 @@ if source == "Demo-Simulation":
     render(Farm.from_dict(demo_state(int(seed), float(capital))), demo=True)
 elif not has_state:
     st.warning("Es läuft noch keine Farm. Starte sie in einem Terminal und lade dann neu:")
-    st.code("python -m botfarm paper --exchange kraken --symbol BTC/EUR --capital 100", language="bash")
+    st.code("python -m botfarm paper --exchange bitget --symbol BTC/USDT --capital 100", language="bash")
 else:
     @st.fragment(run_every=60 if auto else None)
     def live() -> None:
-        render(Farm.load(STATE_FILE), demo=False)
+        real = None
+        if os.path.exists(LIVE_FILE):
+            with open(LIVE_FILE) as fh:
+                real = json.load(fh)
+        render(Farm.load(STATE_FILE), demo=False, real=real)
 
     live()

@@ -4,8 +4,9 @@ Ein Start-Bot handelt eine Kryptowährung. Verdient er Geld, sichert er einen Te
 gründet mit einem weiteren Teil Kind-Bots mit abgewandelten Strategien. Bots, die verlieren,
 werden beendet.
 
-**Aktueller Stand: nur Spielgeld.** Es werden echte Kurse verwendet, aber keine echten Orders
-abgeschickt. Eine Anbindung für echtes Geld gibt es noch nicht.
+Es gibt drei Betriebsarten: Spielgeld (`paper`), Probelauf an der echten Börse (`live`, zeigt
+Orders nur an) und echte Orders (`live --real-orders`). Die Anbindung für echte Orders ist nur
+gegen eine nachgebaute Börse getestet, noch nie gegen eine echte.
 
 ## Starten
 
@@ -13,16 +14,16 @@ abgeschickt. Eine Anbindung für echtes Geld gibt es noch nicht.
 pip install -r requirements-botfarm.txt
 ```
 
-Test auf alten Kursen einer Börse (hier Kraken, Bitcoin gegen Euro):
+Test auf alten Kursen einer Börse (hier Bitget, Bitcoin gegen USDT):
 
 ```bash
-python -m botfarm simulate --exchange kraken --symbol BTC/EUR --bars 8000 -v
+python -m botfarm simulate --exchange bitget --symbol BTC/USDT --bars 8000 -v
 ```
 
 Dauerbetrieb mit Spielgeld (prüft alle 5 Minuten auf neue Stundenkerzen, Stand liegt in `botfarm_state/`):
 
 ```bash
-python -m botfarm paper --exchange kraken --symbol BTC/EUR --capital 100
+python -m botfarm paper --exchange bitget --symbol BTC/USDT --capital 100
 ```
 
 Stand ansehen:
@@ -47,6 +48,46 @@ touch botfarm_state/STOP
 
 Ohne `--exchange` läuft `simulate` auf künstlichen Zufallskursen. Das zeigt nur, dass die
 Mechanik funktioniert, und sagt nichts über Gewinne aus.
+
+## Echtes Geld
+
+1. Auf der Börse einen API-Schlüssel anlegen, der nur Spot-Handel darf. **Auszahlungen nicht
+   erlauben.**
+2. Schlüssel nur lokal als Umgebungsvariablen setzen (Bitget braucht auch die Passphrase):
+
+```bash
+export BOTFARM_API_KEY="..."
+export BOTFARM_API_SECRET="..."
+export BOTFARM_API_PASSPHRASE="..."
+```
+
+3. Probelauf: verbindet sich mit dem Konto, zeigt aber nur an, was er ordern würde.
+
+```bash
+python -m botfarm live --exchange bitget --symbol BTC/USDT --capital 50 --dashboard
+```
+
+4. Echte Orders: vorher den Ordner `botfarm_state/` vom Probelauf verschieben oder löschen.
+
+```bash
+python -m botfarm live --exchange bitget --symbol BTC/USDT --capital 50 --dashboard --real-orders
+```
+
+So ist das Geld geschützt:
+
+- `--capital` ist das Budget. Der Bot kauft nie für mehr, auch wenn mehr auf dem Konto liegt.
+  Gesicherter Gewinn bleibt als USDT auf der Börse liegen und wird nicht mehr gehandelt.
+- Beim ersten Start prüft er, ob das Budget frei auf dem Konto liegt.
+- Alle Bots handeln dasselbe Paar. Auf der Börse gibt es deshalb nur eine gemeinsame Position;
+  wer welchen Anteil hat, steht in der Buchführung der Farm.
+- Ist nach einer Order unklar, ob sie ausgeführt wurde, sperrt sich der Bot
+  (`botfarm_state/BOERSE_PRUEFEN`), statt ein zweites Mal zu kaufen.
+- War der Bot aus, spielt er verpasste Kerzen nicht nach, sondern macht beim aktuellen Kurs
+  weiter.
+- Not-Aus per `STOP`-Datei verkauft auch die echte Position.
+
+Buchführung und echtes Konto weichen leicht voneinander ab, weil echte Orders nie genau zum
+Schlusskurs ausgeführt werden. `status` und das Dashboard zeigen beide Werte.
 
 ## Wie es funktioniert
 
