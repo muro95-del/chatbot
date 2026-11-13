@@ -119,7 +119,7 @@ def _loop(args, live: bool, state: str, live_file: str, stop_file: str, check_fi
 
     executor = None
     if live:
-        executor = LiveExecutor(connect(args.exchange), args.symbol, args.capital, live_file, args.real_orders)
+        executor = LiveExecutor(connect(args.exchange, args.uta), args.symbol, args.capital, live_file, args.real_orders)
         if args.real_orders and not os.path.exists(state):
             executor.check_balance()
         print("ECHTE ORDERS sind eingeschaltet." if args.real_orders
@@ -216,5 +216,6 @@ def main(argv=None) -> None:
             p.add_argument("--dashboard", action="store_true", help="Dashboard im Browser mitstarten")
         if name == "live":
             p.add_argument("--real-orders", action="store_true", help="echte Orders abschicken (sonst nur Probelauf)")
+            p.add_argument("--uta", action="store_true", help="Bitget: Unified Trading Account statt klassischem Spot-Konto")
     args = parser.parse_args(argv)
     args.func(args)

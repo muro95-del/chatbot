@@ -374,7 +374,7 @@ def test_live_command_runs_and_refuses_to_mix_with_paper(tmp_path, monkeypatch, 
     ex = FakeExchange(price=float(full["close"].iloc[1999]))
     monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[: visible["n"]].tail(1500).reset_index(drop=True))
-    monkeypatch.setattr(live_module, "connect", lambda name: ex)
+    monkeypatch.setattr(live_module, "connect", lambda name, uta=False: ex)
     argv = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--capital", "100", "--once", "--real-orders"]
 
     cli.main(argv)
@@ -405,7 +405,7 @@ def test_unclear_order_locks_live_mode_until_checked(tmp_path, monkeypatch):
     monkeypatch.setattr(live_module.time, "sleep", lambda s: None)
     monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
     monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[: visible["n"]].tail(1500).reset_index(drop=True))
-    monkeypatch.setattr(live_module, "connect", lambda name: ex)
+    monkeypatch.setattr(live_module, "connect", lambda name, uta=False: ex)
     argv = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--once", "--real-orders"]
     cli.main(argv)
     visible["n"] = 2000
@@ -414,3 +414,29 @@ def test_unclear_order_locks_live_mode_until_checked(tmp_path, monkeypatch):
     assert (tmp_path / "BOERSE_PRUEFEN").exists()
     with pytest.raises(SystemExit, match="Gesperrt"):
         cli.main(argv)  # kein zweiter Kaufversuch, solange niemand nachgesehen hat
+
+
+def test_connect_switches_bitget_to_unified_account(monkeypatch):
+    import ccxt
+
+    from botfarm import live
+
+    class FakeBitget:
+        requiredCredentials = {"password": True}
+
+        def __init__(self, config):
+            self.config, self.options, self.password = config, {}, None
+
+        def load_markets(self):
+            self.loaded_with = dict(self.options)
+
+    monkeypatch.setattr(ccxt, "bitget", FakeBitget)
+    monkeypatch.setenv("BOTFARM_API_KEY", "k")
+    monkeypatch.setenv("BOTFARM_API_SECRET", "s")
+    monkeypatch.delenv("BOTFARM_API_PASSPHRASE", raising=False)
+    with pytest.raises(SystemExit, match="Passphrase"):
+        live.connect("bitget", uta=True)
+    monkeypatch.setenv("BOTFARM_API_PASSPHRASE", "p")
+    ex = live.connect("bitget", uta=True)
+    assert ex.password == "p" and ex.loaded_with == {"uta": True}
+    assert live.connect("bitget").loaded_with == {}

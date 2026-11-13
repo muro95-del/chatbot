@@ -67,6 +67,11 @@ export BOTFARM_API_PASSPHRASE="..."
 python -m botfarm live --exchange bitget --symbol BTC/USDT --capital 50 --dashboard
 ```
 
+   Zeigt Bitget beim Erstellen des Schlüssels „Unified trading account“ statt „Spot“, läuft dein
+   Konto als Unified Trading Account. Dann bei jedem `live`-Befehl `--uta` anhängen und beim
+   Schlüssel unter „Unified trading account“ **Manage** (Kontostand) und **Trade** (Orders)
+   anhaken.
+
 4. Echte Orders: vorher den Ordner `botfarm_state/` vom Probelauf verschieben oder löschen.
 
 ```bash

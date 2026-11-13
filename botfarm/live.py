@@ -18,7 +18,8 @@ KEY_ENV, SECRET_ENV, PASSPHRASE_ENV = "BOTFARM_API_KEY", "BOTFARM_API_SECRET", "
 BUY_RESERVE = 0.003  # etwas Luft fuer Gebuehren und Kursbewegung beim Kauf
 
 
-def connect(exchange: str):
+def connect(exchange: str, uta: bool = False):
+    """Mit dem Konto verbinden. `uta` schaltet bei Bitget auf das Unified Trading Account um."""
     import ccxt
 
     key, secret = os.environ.get(KEY_ENV), os.environ.get(SECRET_ENV)
@@ -29,6 +30,8 @@ def connect(exchange: str):
         ex.password = os.environ.get(PASSPHRASE_ENV)
         if not ex.password:
             raise SystemExit(f"{exchange} braucht zusaetzlich die API-Passphrase in {PASSPHRASE_ENV}.")
+    if uta:
+        ex.options["uta"] = True
     ex.load_markets()
     return ex
 
