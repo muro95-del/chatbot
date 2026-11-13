@@ -106,3 +106,29 @@ def last_prices(exchange: str, symbols) -> dict:
         _tickers[exchange] = getattr(ccxt, exchange)({"enableRateLimit": True})
     tickers = _tickers[exchange].fetch_tickers(list(symbols))
     return {s: float(t["last"]) for s, t in tickers.items() if s in symbols and t.get("last")}
+
+
+def analyse(frames: dict, bar_minutes: int = 60) -> dict:
+    """Kurze Marktauswertung je Coin aus den Kerzen: Trend, Schwung, Schwankung."""
+    per_day = max(int(1440 / bar_minutes), 1)
+    out = {}
+    for symbol, df in frames.items():
+        close = df["close"].astype(float)
+        if len(close) < 30:
+            continue
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+        rsi = float(100 - 100 / (1 + gain.iloc[-1] / loss.iloc[-1])) if loss.iloc[-1] > 0 else 100.0
+        ema_fast, ema_slow = close.ewm(span=50, adjust=False).mean().iloc[-1], close.ewm(span=200, adjust=False).mean().iloc[-1]
+        last = float(close.iloc[-1])
+        trend = "aufwärts" if last > ema_fast > ema_slow else "abwärts" if last < ema_fast < ema_slow else "seitwärts"
+        back = min(per_day, len(close) - 1)
+        out[symbol] = {
+            "price": last,
+            "change_24h": float(last / close.iloc[-1 - back] - 1),
+            "trend": trend,
+            "rsi": round(rsi, 1),
+            "volatility_day": float(close.pct_change().tail(per_day * 7).std() * per_day ** 0.5),
+        }
+    return out

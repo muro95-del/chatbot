@@ -7,7 +7,7 @@ import json
 import os
 import time
 
-from . import data, strategies
+from . import data, news, strategies
 from .config import FarmConfig
 from .farm import WARMUP, Farm
 
@@ -157,7 +157,13 @@ def _loop(args, live: bool, state: str, live_file: str, stop_file: str, check_fi
 
     farm = Farm.load(state) if os.path.exists(state) else None
     shown = len(farm.events) if farm else 0
+    watcher = None if args.no_news else news.Watcher(os.path.join(STATE_DIR, "news.json"), _symbols(args))
+    mood: dict = {}
     while True:
+        if watcher and watcher.due():
+            mood = _read_news(watcher, mood)
+        if farm:
+            farm.news = mood
         try:
             frames = data.frames_from_exchange(args.exchange, _symbols(args), args.timeframe, 1500)
             df = next(iter(frames.values()))
@@ -171,6 +177,7 @@ def _loop(args, live: bool, state: str, live_file: str, stop_file: str, check_fi
         if farm is None:
             wanted.symbols = tuple(frames)
             farm = Farm.start(wanted, frames, len(df) - 1)
+            farm.news = mood
         else:
             # Coins und Hebel gelten immer so, wie der Bot gerade gestartet wurde.
             farm.config.symbols = tuple(frames)
@@ -184,6 +191,7 @@ def _loop(args, live: bool, state: str, live_file: str, stop_file: str, check_fi
                 new = new[-1:]
             for i in new:
                 farm.step(frames, i)
+        farm.market = data.analyse(frames, farm.config.bar_minutes)
         shown = _settle(farm, executor, state, stop_file, check_file, shown, summary=True)
         if farm.halted or args.once:
             return
@@ -195,10 +203,26 @@ def _loop(args, live: bool, state: str, live_file: str, stop_file: str, check_fi
                 prices = data.last_prices(args.exchange, farm.config.symbols)
             except Exception:
                 continue  # kurzer Netzwerkfehler: beim naechsten Tick erneut
+            if watcher and watcher.due():
+                mood = _read_news(watcher, mood)
+                farm.news = mood
             farm.tick(prices, time.strftime("%Y-%m-%d %H:%M:%S"))
             shown = _settle(farm, executor, state, stop_file, check_file, shown, summary=False)
         if farm.halted:
             return
+
+
+def _read_news(watcher, previous: dict) -> dict:
+    """Nachrichten holen und bewerten. Bei einem Fehler gilt die bisherige Stimmung weiter."""
+    try:
+        mood = watcher.update()
+    except Exception as exc:
+        print(f"  Nachrichten nicht abrufbar ({type(exc).__name__}: {exc}).")
+        return previous
+    strong = {c: v for c, v in mood.items() if abs(v) >= 0.3}
+    if strong:
+        print("  Nachrichten-Stimmung: " + ", ".join(f"{c} {v:+.2f}" for c, v in strong.items()))
+    return mood
 
 
 def _settle(farm: Farm, executor, state: str, stop_file: str, check_file: str, shown: int, summary: bool) -> int:
@@ -281,6 +305,7 @@ def main(argv=None) -> None:
             p.add_argument("--tick", type=int, default=10, help="Sekunden zwischen zwei Kurs-Abfragen")
             p.add_argument("--once", action="store_true", help="nur einen Durchlauf")
             p.add_argument("--dashboard", action="store_true", help="Dashboard im Browser mitstarten")
+            p.add_argument("--no-news", action="store_true", help="Nachrichten nicht auswerten")
         if name == "live":
             p.add_argument("--real-orders", action="store_true", help="echte Orders abschicken (sonst nur Probelauf)")
             p.add_argument("--uta", action="store_true", help="Bitget: Unified Trading Account statt klassischem Spot-Konto")

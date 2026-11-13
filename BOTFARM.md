@@ -17,6 +17,8 @@ Im Ordner liegen vier Dateien zum Doppelklicken:
 - `Bot starten - ECHTGELD.bat`: handelt mit echtem Geld, nach Eingabe von `JA`.
 - `Bot stoppen (Not-Aus).bat`: der laufende Bot verkauft alles und hält an.
 
+`Desktop-Verknuepfungen erstellen.bat` legt diese Starter einmalig auf den Desktop.
+
 Beim ersten Start werden die Pakete installiert und die Bitget-API-Daten abgefragt. Sie werden
 im Windows-Benutzerkonto gespeichert, nicht im Ordner. Budget, Coins und Hebel stehen oben in
 `windows/run.bat`. Das Fenster muss offen bleiben, solange der Bot laufen soll.
@@ -130,6 +132,24 @@ Sechs Familien: Kreuzung gleitender Durchschnitte (EMA), RSI-Gegenbewegung, Ausb
 Kursspanne (Donchian), Bollinger-Bänder, MACD und Supertrend (ATR-basiert), jeweils mit
 optionalem Trendfilter. Welcher Indikator mit welchen Werten auf welchem Coin läuft, entscheidet
 der Backtest. Es gibt keinen Indikator, der grundsätzlich der beste ist.
+
+## Nachrichten und Marktauswertung
+
+Im Dauerbetrieb liest der Bot alle drei Minuten die RSS-Feeds von CoinDesk, Cointelegraph und
+Decrypt und bewertet jede neue Nachricht: welche Coins sie betrifft, ob sie gut oder schlecht für
+den Kurs ist und wie wichtig sie ist. Daraus entsteht je Coin eine Stimmung von −1 bis +1; eine
+Nachricht zählt nach sechs Stunden nur noch halb.
+
+- Mit `ANTHROPIC_API_KEY` in der Umgebung bewertet Claude die Nachrichten und begründet jede
+  Bewertung. Das kostet API-Guthaben.
+- Ohne Schlüssel zählt der Bot nur gute und schlechte Stichwörter. Das ist grob.
+
+Steht die Stimmung für einen Coin stärker als 0,5 gegen die Richtung eines Bots, steigt er nicht
+ein und schließt eine offene Position (`news_block` in `botfarm/config.py`). `--no-news` schaltet
+die Nachrichten ab. Ob diese Regel den Gewinn verbessert, ist nicht belegt.
+
+Das Dashboard zeigt dazu den Gewinn je Bot als Diagramm, eine Markttabelle (Kurs, 24 Stunden,
+Trend, RSI, Schwankung, Nachrichten-Stimmung) und die bewerteten Nachrichten.
 
 ## Echtzeit
 

@@ -17,6 +17,11 @@ class FarmConfig:
     bar_minutes: int = 60  # Laenge einer Kerze, fuer die Finanzierungskosten
     funding_per_hour: float = 0.0000125  # laufende Kosten einer Hebel-Position (0,01 % je 8 Stunden)
 
+    # --- Nachrichten ----------------------------------------------------
+    # Stimmung je Coin von -1 bis +1. Ab dieser Staerke GEGEN die eigene Richtung steigt ein Bot
+    # nicht ein und schliesst eine offene Position. Werte ueber 1 schalten das ab.
+    news_block: float = 0.5
+
     # --- Handelskosten ---------------------------------------------------
     fee: float = 0.001  # 0,1 % Boersengebuehr pro Kauf/Verkauf
     slippage: float = 0.0005  # 0,05 % Kursabweichung pro Kauf/Verkauf

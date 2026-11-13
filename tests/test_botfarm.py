@@ -10,6 +10,15 @@ from botfarm.backtest import backtest
 from botfarm.bot import Account, Bot
 
 
+@pytest.fixture(autouse=True)
+def no_network_news(monkeypatch):
+    """Tests lesen nie echte Nachrichten aus dem Netz."""
+    from botfarm import news
+
+    monkeypatch.setattr(news, "fetch_feeds", lambda: ([], []))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
 def frame(prices):
     prices = np.asarray(prices, dtype=float)
     return pd.DataFrame(
@@ -674,3 +683,110 @@ def test_cli_simulates_several_coins_and_blocks_leverage_with_real_money(capsys)
     assert "Gesamtvermoegen" in out and "ETH/USDT:" in out
     with pytest.raises(SystemExit, match="Spielgeld"):
         cli.main(["live", "--exchange", "bitget", "--max-leverage", "3", "--once"])
+
+
+# ---------------- Nachrichten und Marktauswertung
+RSS = """<?xml version="1.0"?><rss><channel>
+<item><title>Bitcoin surges to record high as ETF inflows soar</title><link>https://example.com/a</link>
+<description>&lt;p&gt;Strong rally&lt;/p&gt;</description><pubDate>Fri, 13 Nov 2026 10:00:00 GMT</pubDate></item>
+<item><title>Solana exchange hacked, funds stolen</title><link>https://example.com/b</link>
+<description>Exploit drains wallets</description><pubDate>Fri, 13 Nov 2026 11:00:00 GMT</pubDate></item>
+<item><title>Developer conference announced</title><link>javascript:alert(1)</link><description></description></item>
+</channel></rss>"""
+
+
+def test_news_are_parsed_rated_and_decay(tmp_path, monkeypatch):
+    from botfarm import news
+
+    items = news.parse_feed(RSS, "Test")
+    assert [i["title"][:7] for i in items] == ["Bitcoin", "Solana ", "Develop"]
+    assert items[0]["summary"] == "Strong rally" and items[2]["link"] == ""  # nur http-Links, kein HTML
+    with pytest.raises(ValueError):
+        news.parse_feed('<!DOCTYPE x [<!ENTITY a "b">]><rss/>', "Test")
+
+    coins = ["BTC", "ETH", "SOL"]
+    news.rate_keywords(items, coins)
+    assert items[0]["coins"] == {"BTC": 1.0} and items[1]["coins"] == {"SOL": -1.0} and items[2]["coins"] == {}
+    now = items[1]["published"]
+    mood = news.scores(items, coins, now)
+    assert mood["BTC"] > 0.3 and mood["SOL"] == -0.5 and mood["ETH"] == 0
+    assert abs(news.scores(items, coins, now + 24 * 3600)["SOL"]) < 0.05  # nach einem Tag fast vergessen
+
+    monkeypatch.setattr(news, "fetch_feeds", lambda: (news.parse_feed(RSS, "Test"), ["Decrypt: Timeout"]))
+    watcher = news.Watcher(str(tmp_path / "news.json"), ["BTC/USDT", "SOL/USDT"])
+    assert watcher.due()
+    watcher.update()
+    watcher.update()  # dieselben Nachrichten werden nicht doppelt gezaehlt
+    saved = json.load(open(tmp_path / "news.json"))
+    assert len(saved["items"]) == 3 and saved["errors"] == ["Decrypt: Timeout"] and saved["method"] == "Stichwörter"
+    assert not watcher.due() and len(news.Watcher(str(tmp_path / "news.json"), ["BTC/USDT"]).items) == 3
+
+
+def test_claude_news_ratings_are_validated_and_fall_back(tmp_path, monkeypatch):
+    import anthropic
+
+    from botfarm import news
+
+    payload = {"ratings": [
+        {"index": 0, "coins": [{"coin": "BTC", "sentiment": 9}, {"coin": "PEPE", "sentiment": 1}],
+         "importance": 5, "reason": "ETF-Zuflüsse"},
+        {"index": 99, "coins": [], "importance": 1, "reason": "gibt es nicht"},
+    ]}
+    seen = {}
+
+    class FakeMessages:
+        def create(self, **kwargs):
+            seen.update(kwargs)
+            return types.SimpleNamespace(stop_reason="end_turn",
+                                         content=[types.SimpleNamespace(type="text", text=json.dumps(payload))])
+
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: types.SimpleNamespace(beta=types.SimpleNamespace(messages=FakeMessages())))
+    items = news.parse_feed(RSS, "Test")
+    news.rate_claude(items, ["BTC", "SOL"])
+    assert items[0]["coins"] == {"BTC": 1.0} and items[0]["importance"] == 1.0  # begrenzt, fremde Coins verworfen
+    assert items[1]["coins"] == {} and items[1]["reason"] == "nicht bewertet"
+    assert "untrusted" in seen["messages"][0]["content"] and seen["model"] == "claude-opus-5-5"
+
+    def boom():
+        raise RuntimeError("kein Guthaben")
+
+    monkeypatch.setattr(anthropic, "Anthropic", boom)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setattr(news, "fetch_feeds", lambda: (news.parse_feed(RSS, "Test"), []))
+    mood = news.Watcher(str(tmp_path / "n.json"), ["BTC/USDT", "SOL/USDT"]).update()
+    saved = json.load(open(tmp_path / "n.json"))
+    assert mood["SOL"] < 0 and saved["errors"] == ["Claude: RuntimeError"]  # ohne Claude: Stichwoerter
+
+
+def test_bad_news_blocks_longs_and_good_news_blocks_shorts():
+    cfg = FarmConfig(fee=0, slippage=0, epoch_bars=10**9, allow_short=True)
+    farm = one_bot_farm(cfg)
+    short = strategies.normalize({**ALWAYS_IN, "symbol": "BTC/USDT", "side": "short"})
+    farm._add_bot((short, {"return": 0.0, "max_drawdown": 0.0}), 100.0, parent=None, probation=False)
+    long_bot, short_bot = farm.bots
+    df = frame(np.full(40, 100.0))
+
+    farm.news = {"BTC": -0.8}  # sehr schlechte Nachrichten
+    for i in range(0, 10):
+        farm.step(df, i)
+    assert long_bot.account.units == 0 and short_bot.account.units < 0
+
+    farm.news = {"BTC": 0.2}  # schwache Stimmung sperrt niemanden
+    for i in range(10, 20):
+        farm.step(df, i)
+    assert long_bot.account.units > 0 and short_bot.account.units < 0
+
+    farm.news = {"BTC": 0.9}  # sehr gute Nachrichten: Short raus
+    farm.step(df, 20)
+    assert long_bot.account.units > 0 and short_bot.account.units == 0
+    assert any(e["type"] == "news" for e in farm.events)
+    assert Farm.from_dict(farm.to_dict()).news == {"BTC": 0.9}
+
+
+def test_market_analysis_reads_trend():
+    up = trending(600, seed=1, drift=0.003, vol=0.004)
+    down = trending(600, seed=2, drift=-0.003, vol=0.004)
+    view = data.analyse({"BTC/USDT": up, "ETH/USDT": down}, bar_minutes=60)
+    assert view["BTC/USDT"]["trend"] == "aufwärts" and view["ETH/USDT"]["trend"] == "abwärts"
+    assert view["BTC/USDT"]["change_24h"] > 0 > view["ETH/USDT"]["change_24h"]
+    assert view["BTC/USDT"]["rsi"] > 50 > view["ETH/USDT"]["rsi"]

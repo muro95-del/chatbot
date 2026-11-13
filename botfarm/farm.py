@@ -26,6 +26,8 @@ class Farm:
         self.last_ts: str | None = None
         self.prices: dict[str, float] = {}  # letzter Kurs je Coin
         self.tick_ts: str | None = None
+        self.news: dict[str, float] = {}  # Nachrichten-Stimmung je Coin (BTC, ETH, ...)
+        self.market: dict[str, dict] = {}  # Marktauswertung je Handelspaar
         self.halted = ""
         self.next_id = 1
         self.events: list[dict] = []
@@ -95,6 +97,11 @@ class Farm:
                     continue
                 acct.funding(price, cfg.funding_per_bar)
             target = self._signal(bot, df)[i]
+            mood = self.news.get(self.symbol_of(bot).split("/")[0], 0.0)
+            if bot.side * mood <= -cfg.news_block:  # Nachrichten sprechen klar gegen diese Richtung
+                if target >= 0.5 and acct.units and bot.status == "active":
+                    self._event("news", f"steigt wegen Nachrichten aus (Stimmung {mood:+.2f})", bot)
+                target = 0.0
             acct.set_target(target, price, cfg.fee, cfg.slippage, bot.leverage, bot.side)
             equity = acct.equity(price)
             if bot.prev_equity > 0:
@@ -416,6 +423,8 @@ class Farm:
             "last_ts": self.last_ts,
             "prices": self.prices,
             "tick_ts": self.tick_ts,
+            "news": self.news,
+            "market": self.market,
             "halted": self.halted,
             "next_id": self.next_id,
             "events": self.events[-500:],
@@ -432,6 +441,7 @@ class Farm:
         for key in ("vault", "treasury", "bar_count", "last_ts", "halted", "next_id", "events", "wealth_log"):
             setattr(farm, key, data[key])
         farm.tick_ts = data.get("tick_ts")
+        farm.news, farm.market = data.get("news") or {}, data.get("market") or {}
         return farm
 
     def save(self, path: str) -> None:

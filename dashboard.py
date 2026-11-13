@@ -15,9 +15,10 @@ from botfarm.farm import WARMUP
 
 STATE_FILE = os.path.join(STATE_DIR, "state.json")
 LIVE_FILE = os.path.join(STATE_DIR, "live.json")
+NEWS_FILE = os.path.join(STATE_DIR, "news.json")
 BLUE, ORANGE = "#2a78d6", "#eb6834"
 STATUS = {"active": "🟢 aktiv", "probation": "🟡 Probezeit", "dead": "⚫ gestorben"}
-EVENT = {"birth": "🐣 Geburt", "activate": "✅ Start", "secure": "🔒 Sicherung", "death": "💀 Tod",
+EVENT = {"news": "📰 Nachricht", "birth": "🐣 Geburt", "activate": "✅ Start", "secure": "🔒 Sicherung", "death": "💀 Tod",
          "halt": "⛔ Halt", "wait": "⏳ Warten", "llm_error": "⚠️ Claude"}
 
 st.set_page_config(page_title="Bot-Farm", page_icon="🤖", layout="wide")
@@ -35,6 +36,37 @@ def demo_state(seed: int, capital: float) -> dict:
     state = farm.to_dict()
     state["events"] = farm.events
     return state
+
+
+def render_news(farm: Farm) -> None:
+    st.subheader("Nachrichten")
+    if not os.path.exists(NEWS_FILE):
+        st.write("Noch keine Nachrichten gelesen.")
+        return
+    with open(NEWS_FILE) as fh:
+        feed = json.load(fh)
+    note = f"Zuletzt gelesen: {feed['updated']} · Bewertung: {feed['method']}"
+    if feed.get("errors"):
+        note += " · nicht erreichbar: " + ", ".join(feed["errors"])
+    st.caption(note)
+    if feed["method"] != "Claude":
+        st.caption("Ohne ANTHROPIC_API_KEY werden nur Stichwörter gezählt. Das ist grob und erkennt keinen Zusammenhang.")
+    rows = [
+        {"Zeit": pd.to_datetime(item["published"], unit="s").strftime("%d.%m. %H:%M"),
+         "Quelle": item["source"],
+         "Nachricht": item["title"],
+         "Wirkung": ", ".join(f"{c} {v:+.1f}" for c, v in (item.get("coins") or {}).items()) or "–",
+         "Wichtigkeit": item.get("importance", 0.0),
+         "Begründung": item.get("reason", "")}
+        for item in feed["items"][:40]
+    ]
+    if not rows:
+        st.write("Noch keine Nachrichten gelesen.")
+        return
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
+        "Wichtigkeit": st.column_config.ProgressColumn(min_value=0.0, max_value=1.0, format="%.1f")})
+    st.caption(f"Ein Bot steigt nicht ein und schließt seine Position, wenn die Stimmung für seinen Coin "
+               f"stärker als {farm.config.news_block:.1f} gegen seine Richtung steht. Zeiten in UTC.")
 
 
 def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
@@ -110,6 +142,58 @@ def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
             .properties(height=320)
         )
         st.altair_chart(chart, width="stretch")
+
+    if farm.bots:
+        st.subheader("Gewinn je Bot")
+        profit = pd.DataFrame([
+            {"Bot": f"Bot {b.id} · {farm.symbol_of(b).split('/')[0]}"
+                    + (" Short" if b.side < 0 else "") + (f" {b.leverage}x" if b.leverage > 1 else "")
+                    + ("" if b.alive else " †"),
+             "Gewinn": round(farm.profit_of(b), 2),
+             "Ergebnis": "Gewinn" if farm.profit_of(b) >= 0 else "Verlust",
+             "Strategie": strategies.describe(b.genome)}
+            for b in farm.bots
+        ]).sort_values("Gewinn", ascending=False)
+        lo, hi = min(0.0, profit["Gewinn"].min()), max(0.0, profit["Gewinn"].max())
+        span = (hi - lo) or 1.0  # Platz links und rechts, damit die Zahlen nicht an die Achse stossen
+        base = alt.Chart(profit).encode(
+            y=alt.Y("Bot:N", sort=list(profit["Bot"]), title=None, axis=alt.Axis(labelLimit=260)),
+            x=alt.X("Gewinn:Q", title=None, scale=alt.Scale(domain=[lo - span * 0.15, hi + span * 0.15])),
+            tooltip=["Bot:N", alt.Tooltip("Gewinn:Q", format="+,.2f"), "Strategie:N"],
+        )
+        bars = base.mark_bar(cornerRadiusEnd=4, size=16).encode(
+            color=alt.Color("Ergebnis:N", title=None, legend=alt.Legend(orient="top"),
+                            scale=alt.Scale(domain=["Gewinn", "Verlust"], range=[BLUE, ORANGE])))
+        text = alt.Text("Gewinn:Q", format="+,.2f")
+        plus = base.transform_filter("datum.Gewinn >= 0").mark_text(align="left", dx=5).encode(text=text)
+        minus = base.transform_filter("datum.Gewinn < 0").mark_text(align="right", dx=-5).encode(text=text)
+        st.altair_chart((bars + plus + minus).properties(height=alt.Step(30)), width="stretch")
+        st.caption("Gewinn = Konto + bereits Gesichertes + an Kinder Gegebenes − Startgeld. † = gestorben.")
+
+    if not demo and farm.market:
+        st.subheader("Markt live")
+        rows = [
+            {"Coin": sym.split("/")[0],
+             "Kurs": farm.prices.get(sym, m["price"]),
+             "24 h": m["change_24h"] * 100,
+             "Trend": {"aufwärts": "↗ aufwärts", "abwärts": "↘ abwärts"}.get(m["trend"], "→ seitwärts"),
+             "RSI": m["rsi"],
+             "Schwankung/Tag": m["volatility_day"] * 100,
+             "Nachrichten": farm.news.get(sym.split("/")[0], 0.0),
+             "Bots": sum(1 for b in farm.alive if farm.symbol_of(b) == sym)}
+            for sym, m in farm.market.items()
+        ]
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
+            "Kurs": st.column_config.NumberColumn(format="%.4g"),
+            "24 h": st.column_config.NumberColumn(format="%+.2f %%"),
+            "Schwankung/Tag": st.column_config.NumberColumn(format="%.1f %%"),
+            "Nachrichten": st.column_config.NumberColumn(format="%+.2f", help="Stimmung von −1 (sehr schlecht) bis +1 (sehr gut)"),
+        })
+        st.caption("RSI über 70 gilt als überkauft, unter 30 als überverkauft. Trend aus den gleitenden "
+                   "Durchschnitten über 50 und 200 Kerzen.")
+
+    if not demo:
+        render_news(farm)
 
     st.subheader("Bots")
     if not farm.bots:
