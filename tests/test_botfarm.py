@@ -515,3 +515,29 @@ def test_live_loop_follows_price_in_real_time(tmp_path, monkeypatch):
     assert farm.halted and not any(b.account.units for b in farm.bots)
     assert real["units"] == pytest.approx(0, abs=1e-6) and ex.sent[-1][0] == "sell"
     assert clock["t"] == 20  # reagiert beim zweiten Tick, nicht erst bei der naechsten Kerze
+
+
+def test_live_mode_reads_real_account_balance(tmp_path, monkeypatch, capsys):
+    from botfarm import cli
+    import botfarm.live as live_module
+
+    full = data.synthetic(2200, seed=5)
+    ex = FakeExchange(price=float(full["close"].iloc[1499]), free=321.5)
+    ex.fetch_balance = lambda: {"free": {"USDT": 321.5}, "total": {"USDT": 400.0, "BTC": 0.25}}
+    monkeypatch.setattr(cli, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.data, "from_exchange", lambda *a, **k: full.iloc[:1500].reset_index(drop=True))
+    monkeypatch.setattr(live_module, "connect", lambda name, uta=False: ex)
+    argv = ["live", "--exchange", "bitget", "--symbol", "BTC/USDT", "--capital", "100", "--once"]
+
+    cli.main(argv)  # Probelauf reicht: der Kontostand wird nur gelesen
+    acct = json.load(open(tmp_path / "live.json"))["account"]
+    assert (acct["quote_free"], acct["quote_total"], acct["base_total"]) == (321.5, 400.0, 0.25)
+    assert "Bitget-Konto: 400.00 USDT" in capsys.readouterr().out and ex.sent == []
+
+    def broken():
+        raise ConnectionError("offline")
+
+    ex.fetch_balance = broken
+    cli.main(argv)  # Abruf scheitert: Bot laeuft weiter, alter Stand bleibt
+    assert json.load(open(tmp_path / "live.json"))["account"]["quote_total"] == 400.0
+    assert "Kontostand nicht abrufbar" in capsys.readouterr().out

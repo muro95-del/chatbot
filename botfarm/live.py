@@ -60,6 +60,24 @@ class LiveExecutor:
                 "Zahle mehr ein oder starte mit kleinerem --capital."
             )
 
+    def refresh_balance(self) -> dict:
+        """Echten Kontostand von der Boerse lesen (nur lesen, aendert nichts)."""
+        balance = self.ex.fetch_balance()
+        base, quote = self.market["base"], self.market["quote"]
+
+        def amount(kind: str, coin: str) -> float:
+            return float((balance.get(kind) or {}).get(coin) or 0.0)
+
+        self.state["account"] = {
+            "quote": quote,
+            "base": base,
+            "quote_free": amount("free", quote),
+            "quote_total": amount("total", quote) or amount("free", quote),
+            "base_total": amount("total", base) or amount("free", base),
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        return self.state["account"]
+
     def value(self, price: float) -> float:
         """Echter Wert: uebriges Budget plus gekaufte Menge zum aktuellen Kurs."""
         return self.state["cash"] + self.state["units"] * price

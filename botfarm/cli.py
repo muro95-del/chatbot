@@ -200,8 +200,15 @@ def _settle(farm: Farm, executor, state: str, stop_file: str, check_file: str, s
             verb = "ORDER" if order["real"] else "Probelauf, wuerde ordern"
             side = "Kauf" if order["side"] == "buy" else "Verkauf"
             print(f"  {verb}: {side} {order['amount']:.8f} zu {order['price']:.2f} ({order['cost']:.2f})")
+        if summary:  # einmal pro Kerzen-Abfrage den echten Kontostand holen
+            try:
+                acct = executor.refresh_balance()
+                line += (f"  | Bitget-Konto: {acct['quote_total']:.2f} {acct['quote']}"
+                         f" + {acct['base_total']:.8f} {acct['base']}")
+            except Exception as exc:
+                print(f"  Kontostand nicht abrufbar ({type(exc).__name__}: {exc}).")
         executor.save()
-        line += f"  echt {executor.value(farm.last_price):.2f}"
+        line += f"  | Bot-Anteil {executor.value(farm.last_price):.2f}"
     if summary:
         print(line)
     return shown

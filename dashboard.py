@@ -49,11 +49,24 @@ def render(farm: Farm, demo: bool, real: dict | None = None) -> None:
     st.caption(f"Letzte Kerze: {farm.last_ts} · {farm.bar_count} Kerzen verarbeitet"
                + ("" if real else " · nur Spielgeld"))
 
+    if real and real.get("account"):
+        acct = real["account"]
+        worth = acct["quote_total"] + acct["base_total"] * price
+        st.subheader("Dein Bitget-Konto")
+        a = st.columns(4)
+        a[0].metric(f"Gesamtwert ({acct['quote']})", f"{worth:,.2f}")
+        a[1].metric(f"{acct['quote']} gesamt", f"{acct['quote_total']:,.2f}")
+        a[2].metric(f"{acct['quote']} frei", f"{acct['quote_free']:,.2f}")
+        a[3].metric(f"{acct['base']} im Konto", f"{acct['base_total']:.6f}")
+        st.caption(f"Direkt von Bitget gelesen um {acct['ts']} (Handelskonto, {acct['base']} und {acct['quote']}). "
+                   "Der Bot nutzt davon nur sein Budget.")
+    elif real:
+        st.warning("Der echte Kontostand konnte noch nicht von Bitget gelesen werden. Schau ins Bot-Fenster.")
     if real:
         value = real["cash"] + real["units"] * price
         armed = bool(real["orders"]) and real["orders"][-1]["real"]
         st.success(
-            f"**Echtes Konto ({real['symbol']})** · Wert {value:,.2f} bei Budget {real['budget']:,.2f} "
+            f"**Anteil des Bots ({real['symbol']})** · Wert {value:,.2f} bei Budget {real['budget']:,.2f} "
             f"({value / real['budget'] - 1:+.1%}) · Gebühren {real['fees']:,.2f} · {len(real['orders'])} Orders"
             + ("" if armed or not real["orders"] else " · Probelauf, es wurde nichts abgeschickt")
         )
