@@ -10,8 +10,9 @@ gegen eine nachgebaute Börse getestet, noch nie gegen eine echte.
 
 ## Windows: per Doppelklick starten
 
-Im Ordner liegen drei Dateien zum Doppelklicken:
+Im Ordner liegen vier Dateien zum Doppelklicken:
 
+- `Bot starten - Spielgeld.bat`: echte Kurse, erfundenes Geld, braucht keinen Bitget-Schlüssel.
 - `Bot starten - Probelauf.bat`: verbindet sich mit Bitget, kauft aber nichts.
 - `Bot starten - ECHTGELD.bat`: handelt mit echtem Geld, nach Eingabe von `JA`.
 - `Bot stoppen (Not-Aus).bat`: der laufende Bot verkauft alles und hält an.

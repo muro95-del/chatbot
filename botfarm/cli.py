@@ -11,7 +11,7 @@ from . import data, strategies
 from .config import FarmConfig
 from .farm import WARMUP, Farm
 
-STATE_DIR = "botfarm_state"
+STATE_DIR = os.environ.get("BOTFARM_STATE_DIR", "botfarm_state")
 
 
 def _print_events(farm: Farm, start: int) -> int:

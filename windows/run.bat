@@ -28,6 +28,8 @@ if not exist ".installiert" (
   echo ok> ".installiert"
 )
 
+if /i "%1"=="spielgeld" goto spielgeld
+
 rem --- Bitget-Schluessel einmalig abfragen und im Windows-Benutzerkonto speichern ---
 if "%BOTFARM_API_KEY%"=="" (
   echo.
@@ -70,6 +72,19 @@ echo Bot laeuft. Das Dashboard oeffnet sich gleich im Browser.
 echo Dieses Fenster offen lassen. Beenden: Fenster schliessen oder Strg+C.
 echo.
 py -3.14 -m botfarm live --exchange bitget --symbol %SYMBOL% --capital %CAPITAL% --uta --dashboard %EXTRA%
+echo.
+echo Der Bot wurde beendet.
+pause
+exit /b 0
+
+:spielgeld
+rem Spielgeld: echte Kurse, erfundenes Geld, kein Bitget-Schluessel noetig. Eigener Ordner fuer den Stand.
+set BOTFARM_STATE_DIR=botfarm_state_demo
+echo.
+echo Bot laeuft mit SPIELGELD (%CAPITAL% USDT, erfunden). Das Dashboard oeffnet sich gleich im Browser.
+echo Dieses Fenster offen lassen. Beenden: Fenster schliessen oder Strg+C.
+echo.
+py -3.14 -m botfarm paper --exchange bitget --symbol %SYMBOL% --capital %CAPITAL% --dashboard
 echo.
 echo Der Bot wurde beendet.
 pause
